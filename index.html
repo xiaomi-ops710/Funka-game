@@ -144,7 +144,29 @@
   .resultTitle.lose{color:var(--lava-400);}
   .resultTitle.win{color:var(--safe-400);}
 
-  #loadingNote{position:fixed; bottom:16px; left:0; right:0; text-align:center; font-size:11px; color:rgba(242,236,226,0.4); z-index:60;}
+
+  /* ---------- touch controls ---------- */
+  #touchUi{position:fixed; inset:0; z-index:11; display:none; pointer-events:none;}
+  .stickBase{
+    position:fixed; width:88px; height:88px; border-radius:50%;
+    background:rgba(242,236,226,0.08); border:1.5px solid rgba(242,236,226,0.35);
+    opacity:0; transition:opacity 0.15s ease; pointer-events:none;
+  }
+  .stickBase .knob{
+    position:absolute; left:50%; top:50%; width:38px; height:38px; margin:-19px 0 0 -19px;
+    border-radius:50%; background:rgba(242,236,226,0.55);
+    transition:transform 0.03s linear;
+  }
+  #touchButtons{
+    position:fixed; right:22px; bottom:26px; display:flex; gap:12px;
+    pointer-events:auto;
+  }
+  .touchBtn{
+    width:58px; height:58px; border-radius:50%; font-size:14px;
+    background:rgba(15,13,11,0.55); border:1.5px solid rgba(242,236,226,0.4);
+    color:var(--ink-050); -webkit-tap-highlight-color:transparent;
+  }
+  .touchBtn:active{background:rgba(255,138,66,0.4);}
 </style>
 </head>
 <body>
@@ -165,7 +187,7 @@
         <div class="gaugeTrack"><div class="gaugeFill" id="healthFill"></div></div>
       </div>
       <div class="gaugeRow">
-        <div class="gaugeLabel">体力*</div>
+        <div class="gaugeLabel">気力</div>
         <div class="gaugeTrack"><div class="gaugeFill" id="staminaFill"></div></div>
       </div>
     </div>
@@ -176,19 +198,29 @@
   </div>
 </div>
 
+<div id="touchUi">
+  <div class="stickBase" id="stickMove"><div class="knob"></div></div>
+  <div class="stickBase" id="stickLook"><div class="knob"></div></div>
+  <div id="touchButtons">
+    <button class="touchBtn" id="btnCrouch">屈</button>
+    <button class="touchBtn" id="btnDash">走</button>
+    <button class="touchBtn" id="btnJump">跳</button>
+  </div>
+</div>
+
 <div class="screen" id="startScreen">
   <div class="panel">
     <div class="kicker">SURVIVAL ACTION PROTOTYPE</div>
     <h1>大網山 噴火サバイバル</h1>
     <p class="sub">穏やかな登山中、大網山が突如噴火した。麓の避難地点まで、火山灰と火山弾を避けながら駆け下りろ。</p>
-    <div class="briefing">
+    <div class="briefing" id="briefingText">
       <b>移動</b> W A S D　　<b>ダッシュ</b> Shift（スタミナ消費）<br>
       <b>ジャンプ</b> Space　　<b>しゃがみ</b> Ctrl（火山灰ダメージ軽減）<br>
-      <b>視点</b> マウス移動　　<b>一時停止</b> Esc<br><br>
+      <b>視点</b> マウスを画面中心からずらす　　<b>一時停止</b> Esc<br><br>
       降ってくる<b>火山弾・軽石</b>は着弾前に赤い警告円が地面に浮かぶ。当たると大ダメージ。<br>
       噴火が進むと<b>火山灰フォグ</b>が濃くなり、屋外にいるほど体力が削れる。大岩の<b>シェルター</b>に入れば安全。
     </div>
-    <button class="cta" id="startBtn">クリックして山に入る</button>
+    <button class="cta" id="startBtn">タップ／クリックして山に入る</button>
   </div>
 </div>
 
@@ -555,28 +587,138 @@ function burstImpactParticles(x,y,z,isLava){
 const impactBursts = [];
 
 // ======================================================================
-//  INPUT / POINTER LOCK
+//  INPUT
+//  Controls never depend on the Pointer Lock API succeeding (it can be
+//  blocked by an embedding iframe's permissions policy), so the game is
+//  guaranteed to start and be playable everywhere:
+//   - Desktop: WASD + mouse position offset from screen centre (steer
+//     look direction like a virtual stick — no click-and-hold needed).
+//     Pointer Lock is still attempted, purely as a cosmetic cursor-hide,
+//     wrapped so a failure there can never block anything else.
+//   - Touch: on-screen twin joysticks (left = move, right = look) plus
+//     jump/dash/crouch buttons.
 // ======================================================================
 const keys = {};
-window.addEventListener('keydown', e => { keys[e.code]=true; });
+window.addEventListener('keydown', e => {
+  keys[e.code]=true;
+  if(e.code==='Escape' && gameState==='playing'){ setGameState('paused'); safeExitPointerLock(); }
+});
 window.addEventListener('keyup', e => { keys[e.code]=false; });
 
 let yaw = 0, pitch = 0;
 const PITCH_LIMIT = Math.PI/2 - 0.05;
 let pointerLocked = false;
 
+function safeRequestPointerLock(){
+  try{
+    if(renderer.domElement.requestPointerLock){
+      const p = renderer.domElement.requestPointerLock();
+      if(p && typeof p.catch === 'function') p.catch(()=>{ /* denied — fine, mouse-offset look still works */ });
+    }
+  }catch(e){ /* Pointer Lock unavailable in this context — ignore, not required */ }
+}
+function safeExitPointerLock(){
+  try{ if(document.exitPointerLock) document.exitPointerLock(); }catch(e){}
+}
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = (document.pointerLockElement === renderer.domElement);
-  if(!pointerLocked && gameState === 'playing'){
-    setGameState('paused');
+});
+document.addEventListener('pointerlockerror', () => { pointerLocked = false; });
+
+// desktop mouse-offset look (works with or without pointer lock)
+let mouseOffsetX = 0, mouseOffsetY = 0;
+window.addEventListener('mousemove', e => {
+  if(pointerLocked){
+    yaw -= e.movementX * 0.0022;
+    pitch -= e.movementY * 0.0022;
+    pitch = clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT);
+  } else {
+    mouseOffsetX = (e.clientX / window.innerWidth) * 2 - 1;
+    mouseOffsetY = (e.clientY / window.innerHeight) * 2 - 1;
   }
 });
-document.addEventListener('mousemove', e => {
-  if(!pointerLocked) return;
-  yaw -= e.movementX * 0.0022;
-  pitch -= e.movementY * 0.0022;
-  pitch = clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT);
-});
+
+// ---- touch controls (virtual joysticks + action buttons) ----
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const touchMove = { active:false, id:null, originX:0, originY:0, x:0, y:0 };
+const touchLook = { active:false, id:null, originX:0, originY:0, x:0, y:0 };
+
+function setupTouchControls(){
+  document.getElementById('touchUi').style.display = 'block';
+  const surface = renderer.domElement;
+  surface.style.touchAction = 'none';
+
+  surface.addEventListener('touchstart', e => {
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      const isLeftHalf = t.clientX < window.innerWidth/2;
+      if(isLeftHalf && !touchMove.active){
+        touchMove.active=true; touchMove.id=t.identifier;
+        touchMove.originX=t.clientX; touchMove.originY=t.clientY;
+        positionStick('stickMove', t.clientX, t.clientY);
+      } else if(!isLeftHalf && !touchLook.active){
+        touchLook.active=true; touchLook.id=t.identifier;
+        touchLook.originX=t.clientX; touchLook.originY=t.clientY;
+        positionStick('stickLook', t.clientX, t.clientY);
+      }
+    }
+  }, { passive:false });
+
+  surface.addEventListener('touchmove', e => {
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      if(t.identifier===touchMove.id){
+        const dx=t.clientX-touchMove.originX, dy=t.clientY-touchMove.originY;
+        const r=Math.min(1, Math.hypot(dx,dy)/45);
+        const a=Math.atan2(dy,dx);
+        touchMove.x=Math.cos(a)*r; touchMove.y=Math.sin(a)*r;
+        moveStickKnob('stickMove', touchMove.x, touchMove.y);
+      } else if(t.identifier===touchLook.id){
+        const dx=t.clientX-touchLook.originX, dy=t.clientY-touchLook.originY;
+        touchLook.x = clamp(dx/55, -1, 1);
+        touchLook.y = clamp(dy/55, -1, 1);
+        moveStickKnob('stickLook', touchLook.x, touchLook.y);
+        // gentle recentring gives a continuous "rate" feel like a flight stick
+        touchLook.originX += dx*0.3; touchLook.originY += dy*0.3;
+      }
+    }
+  }, { passive:false });
+
+  function onTouchEnd(e){
+    for(const t of e.changedTouches){
+      if(t.identifier===touchMove.id){ touchMove.active=false; touchMove.id=null; touchMove.x=0; touchMove.y=0; hideStick('stickMove'); }
+      if(t.identifier===touchLook.id){ touchLook.active=false; touchLook.id=null; touchLook.x=0; touchLook.y=0; hideStick('stickLook'); }
+    }
+  }
+  surface.addEventListener('touchend', onTouchEnd, { passive:false });
+  surface.addEventListener('touchcancel', onTouchEnd, { passive:false });
+
+  function bindHold(id, code){
+    const el = document.getElementById(id);
+    const on = ev => { ev.preventDefault(); keys[code]=true; };
+    const off = ev => { ev.preventDefault(); keys[code]=false; };
+    el.addEventListener('touchstart', on, { passive:false });
+    el.addEventListener('touchend', off, { passive:false });
+    el.addEventListener('touchcancel', off, { passive:false });
+  }
+  bindHold('btnJump', 'Space');
+  bindHold('btnDash', 'ShiftLeft');
+  bindHold('btnCrouch', 'ControlLeft');
+}
+function positionStick(baseId, x, y){
+  const base = document.getElementById(baseId);
+  base.style.left = (x-44)+'px'; base.style.top = (y-44)+'px';
+  base.style.opacity = '1';
+}
+function moveStickKnob(baseId, nx, ny){
+  const knob = document.getElementById(baseId).querySelector('.knob');
+  knob.style.transform = `translate(${nx*30}px, ${ny*30}px)`;
+}
+function hideStick(baseId){
+  const base = document.getElementById(baseId);
+  base.style.opacity = '0';
+  base.querySelector('.knob').style.transform = 'translate(0,0)';
+}
 
 // ======================================================================
 //  AUDIO (procedural rumble, no external assets)
@@ -689,20 +831,32 @@ function showPhaseBanner(text){
 
 // ======================================================================
 //  START / RETRY
+//  Screen transitions and audio init happen unconditionally — Pointer
+//  Lock is requested only as a bonus and can never prevent the game
+//  from starting (see safeRequestPointerLock above).
 // ======================================================================
+if(isTouchDevice){
+  setupTouchControls();
+  document.getElementById('briefingText').innerHTML =
+    '<b>移動</b> 画面左側をドラッグ　　<b>視点</b> 画面右側をドラッグ<br>' +
+    '<b>右下ボタン</b> 屈=しゃがみ／走=ダッシュ／跳=ジャンプ<br><br>' +
+    '降ってくる<b>火山弾・軽石</b>は着弾前に赤い警告円が地面に浮かぶ。当たると大ダメージ。<br>' +
+    '噴火が進むと<b>火山灰フォグ</b>が濃くなり、屋外にいるほど体力が削れる。大岩の<b>シェルター</b>に入れば安全。';
+}
+
 document.getElementById('startBtn').addEventListener('click', () => {
   resetGame();
-  renderer.domElement.requestPointerLock();
   setGameState('playing');
   if(!audioCtx) initAudio();
+  if(!isTouchDevice) safeRequestPointerLock();
 });
 document.getElementById('retryBtn').addEventListener('click', () => {
   resetGame();
-  renderer.domElement.requestPointerLock();
   setGameState('playing');
+  if(!isTouchDevice) safeRequestPointerLock();
 });
 renderer.domElement.addEventListener('click', () => {
-  if(gameState === 'paused'){ renderer.domElement.requestPointerLock(); setGameState('playing'); }
+  if(gameState === 'paused'){ setGameState('playing'); if(!isTouchDevice) safeRequestPointerLock(); }
 });
 
 function showEndScreen(){
@@ -864,6 +1018,22 @@ function updateShelterStatus(){
 }
 
 function updateMovement(dt){
+  // --- look: touch joystick > pointer-locked mouse delta > mouse-offset-from-centre ---
+  if(touchLook.active){
+    yaw -= touchLook.x * 2.1 * dt;
+    pitch -= touchLook.y * 1.5 * dt;
+    pitch = clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT);
+  } else if(!pointerLocked){
+    const dz = 0.07;
+    const ax = Math.abs(mouseOffsetX), ay = Math.abs(mouseOffsetY);
+    const mx = ax>dz ? Math.sign(mouseOffsetX)*(ax-dz)/(1-dz) : 0;
+    const my = ay>dz ? Math.sign(mouseOffsetY)*(ay-dz)/(1-dz) : 0;
+    yaw -= mx * 2.3 * dt;
+    pitch -= my * 1.4 * dt;
+    pitch = clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT);
+  }
+  // (pointer-locked mouse deltas are applied directly in the mousemove listener)
+
   forward3.set(Math.sin(yaw), 0, Math.cos(yaw)).normalize().multiplyScalar(-1);
   right3.set(forward3.z, 0, -forward3.x);
 
@@ -872,6 +1042,10 @@ function updateMovement(dt){
   if(keys['KeyS']){ moveX-=forward3.x; moveZ-=forward3.z; }
   if(keys['KeyD']){ moveX+=right3.x; moveZ+=right3.z; }
   if(keys['KeyA']){ moveX-=right3.x; moveZ-=right3.z; }
+  if(touchMove.active){
+    moveX += forward3.x*(-touchMove.y) + right3.x*touchMove.x;
+    moveZ += forward3.z*(-touchMove.y) + right3.z*touchMove.x;
+  }
   const moving = (moveX!==0 || moveZ!==0);
   if(moving){ const len=Math.hypot(moveX,moveZ); moveX/=len; moveZ/=len; }
 
