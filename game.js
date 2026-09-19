@@ -169,13 +169,21 @@ function terrainHeight(x,z){
 }
 {
   const pos = groundGeo.attributes.position;
+  const colors = new Float32Array(pos.count*3);
+  const ashCol = new THREE.Color(0x342d26), dirtCol = new THREE.Color(0x4a3625), scrubCol = new THREE.Color(0x51462a);
   for(let i=0;i<pos.count;i++){
     const x=pos.getX(i), z=pos.getZ(i);
     pos.setY(i, terrainHeight(x,z));
+    const d = Math.sqrt(x*x+z*z);
+    const t = Math.min(1, d/260);
+    const col = t<0.35 ? ashCol.clone().lerp(dirtCol, t/0.35) : dirtCol.clone().lerp(scrubCol, (t-0.35)/0.65);
+    const v = 0.82+Math.random()*0.36;
+    colors[i*3]=col.r*v; colors[i*3+1]=col.g*v; colors[i*3+2]=col.b*v;
   }
+  groundGeo.setAttribute('color', new THREE.BufferAttribute(colors,3));
   groundGeo.computeVertexNormals();
 }
-const groundMat = new THREE.MeshStandardMaterial({ color:0x4a3625, roughness:1, metalness:0, flatShading:true });
+const groundMat = new THREE.MeshStandardMaterial({ color:0xffffff, vertexColors:true, roughness:1, metalness:0, flatShading:true });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.receiveShadow = true;
 scene.add(ground);
@@ -219,6 +227,19 @@ for(let i=0;i<conePos.count;i++){
   conePos.setY(i, y + Math.sin(x*0.15+z*0.18)*1.1 - gully*0.6);
 }
 coneGeo.computeVertexNormals();
+{
+  const colors = new Float32Array(conePos.count*3);
+  const rockCol = new THREE.Color(0x8f8478), sootCol = new THREE.Color(0x2b231d), rustCol = new THREE.Color(0x8a4a28);
+  for(let i=0;i<conePos.count;i++){
+    const y = conePos.getY(i);
+    const t = THREE.MathUtils.clamp((y+50)/100, 0, 1);
+    let col = rockCol.clone().lerp(sootCol, Math.min(1,t*0.75));
+    if(t>0.72) col = col.lerp(rustCol, ((t-0.72)/0.28)*0.55);
+    const v = 0.78+Math.random()*0.44;
+    colors[i*3]=col.r*v; colors[i*3+1]=col.g*v; colors[i*3+2]=col.b*v;
+  }
+  coneGeo.setAttribute('color', new THREE.BufferAttribute(colors,3));
+}
 const rockTex = (()=>{
   const c=document.createElement('canvas'); c.width=c.height=512;
   const ctx2=c.getContext('2d');
@@ -244,19 +265,39 @@ const rockTex = (()=>{
   tex.wrapS=THREE.RepeatWrapping; tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(4,3);
   return tex;
 })();
-const coneMat = new THREE.MeshStandardMaterial({color:0x8f8478, map:rockTex, roughness:0.97, flatShading:true});
+const coneMat = new THREE.MeshStandardMaterial({color:0xffffff, vertexColors:true, map:rockTex, roughness:0.97, flatShading:true});
 const cone = new THREE.Mesh(coneGeo, coneMat);
 cone.position.y = 50;
 cone.castShadow = true; cone.receiveShadow = true;
 volcano.add(cone);
 
-// crater glow disc
+// crater lava lake — churning glow texture with drifting dark cooling-crust patches
+const craterTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=256;
+  const ctx2=c.getContext('2d');
+  const g=ctx2.createRadialGradient(128,128,6,128,128,128);
+  g.addColorStop(0,'#fff6d0'); g.addColorStop(0.32,'#ffb347'); g.addColorStop(0.68,'#ff4e12'); g.addColorStop(1,'#7a1a04');
+  ctx2.fillStyle=g; ctx2.fillRect(0,0,256,256);
+  for(let i=0;i<28;i++){
+    ctx2.fillStyle = `rgba(28,10,4,${0.22+Math.random()*0.38})`;
+    const cx=Math.random()*256, cy=Math.random()*256, r=6+Math.random()*24;
+    ctx2.beginPath(); ctx2.ellipse(cx,cy,r,r*0.55,Math.random()*Math.PI,0,Math.PI*2); ctx2.fill();
+  }
+  return new THREE.CanvasTexture(c);
+})();
 const craterGeo = new THREE.CircleGeometry(16,32);
-const craterMat = new THREE.MeshBasicMaterial({color:0xff5a1f});
+const craterMat = new THREE.MeshBasicMaterial({map:craterTex});
 const crater = new THREE.Mesh(craterGeo, craterMat);
 crater.rotation.x = -Math.PI/2;
 crater.position.y = 99;
 volcano.add(crater);
+
+// dark cooled-rock rim around the lava lake for depth
+const craterRim = new THREE.Mesh(new THREE.RingGeometry(15.5,20,32),
+  new THREE.MeshStandardMaterial({color:0x1c1712, roughness:1, flatShading:true, side:THREE.DoubleSide}));
+craterRim.rotation.x = -Math.PI/2;
+craterRim.position.y = 98.6;
+volcano.add(craterRim);
 
 // inner glow sprite (billboard) for extra brightness
 const glowTex = (()=>{
@@ -367,18 +408,32 @@ scene.add(studyRoom);
 
 /* ---------- Lava flow streams (glowing rivers down the slope, animated) ---------- */
 const lavaFlowTex = (()=>{
-  const c=document.createElement('canvas'); c.width=64; c.height=256;
+  const c=document.createElement('canvas'); c.width=96; c.height=384;
   const ctx2=c.getContext('2d');
-  const grad = ctx2.createLinearGradient(0,0,0,256);
-  grad.addColorStop(0,'#fff2c8'); grad.addColorStop(0.25,'#ffb347'); grad.addColorStop(0.55,'#ff4e12');
-  grad.addColorStop(0.8,'#8a1c04'); grad.addColorStop(1,'#2c0a02');
-  ctx2.fillStyle=grad; ctx2.fillRect(0,0,64,256);
-  ctx2.globalAlpha=0.5;
-  for(let i=0;i<160;i++){
-    ctx2.fillStyle = Math.random()<0.5 ? '#1a0602':'#ffd98a';
-    const w=2+Math.random()*8, h=2+Math.random()*10;
-    ctx2.fillRect(Math.random()*64, Math.random()*256, w, h);
+  // cooled dark basalt crust base
+  ctx2.fillStyle='#170b06'; ctx2.fillRect(0,0,96,384);
+  for(let i=0;i<420;i++){
+    const shade = 8+Math.random()*26;
+    ctx2.fillStyle = `rgba(${34+shade},${18+shade*0.5},${10+shade*0.3},${0.18+Math.random()*0.28})`;
+    const r=2+Math.random()*9;
+    ctx2.beginPath(); ctx2.arc(Math.random()*96, Math.random()*384, r, 0, Math.PI*2); ctx2.fill();
   }
+  // glowing molten cracks winding through the crust
+  function drawCrack(x0,y0,steps,width0){
+    let x=x0,y=y0, ang=Math.PI/2+(Math.random()-0.5)*0.5;
+    for(let i=0;i<steps;i++){
+      ang += (Math.random()-0.5)*0.55;
+      const nx=x+Math.cos(ang)*7, ny=y+Math.sin(ang)*7;
+      const t=i/steps, w=width0*(0.35+0.65*Math.sin(t*Math.PI));
+      ctx2.strokeStyle = `rgba(255,${170+Math.random()*70|0},${50+Math.random()*50|0},0.95)`;
+      ctx2.lineWidth = w; ctx2.lineCap='round';
+      ctx2.beginPath(); ctx2.moveTo(x,y); ctx2.lineTo(nx,ny); ctx2.stroke();
+      x=nx; y=ny;
+      if(x<0||x>96||y<0||y>384) break;
+    }
+  }
+  for(let i=0;i<7;i++) drawCrack(24+Math.random()*48, Math.random()*384, 55+Math.random()*35, 4+Math.random()*4);
+  for(let i=0;i<12;i++) drawCrack(Math.random()*96, Math.random()*384, 16+Math.random()*18, 1.4+Math.random()*2);
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
   return tex;
@@ -427,6 +482,26 @@ buildLavaFlow(0.4, 0.55, 2.6, 3.5);
 buildLavaFlow(2.1, 0.4, 2.0, 4.5);
 buildLavaFlow(-1.3, 0.45, 2.3, 3.0);
 buildLavaFlow(4.0, 0.35, 1.8, 5.0);
+
+// small pooled lava at the foot of the main flow, where it spreads out at the base
+function buildLavaPool(angle, wobble, r){
+  const rad = 62, wob = Math.sin(1*7+angle*3)*wobble;
+  const x = Math.sin(angle)*rad + Math.cos(angle)*wob;
+  const z = Math.cos(angle)*rad - Math.sin(angle)*wob;
+  const geo = new THREE.CircleGeometry(r, 18);
+  geo.rotateX(-Math.PI/2);
+  const p = geo.attributes.position;
+  for(let i=0;i<p.count;i++){
+    const px=p.getX(i), pz=p.getZ(i), a=Math.atan2(pz,px);
+    const w = 1+Math.sin(a*5+angle)*0.2+Math.cos(a*3-angle)*0.14;
+    p.setX(i, px*w); p.setZ(i, pz*w);
+  }
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({map:craterTex}));
+  mesh.position.set(x, 8.2, z);
+  volcano.add(mesh);
+}
+buildLavaPool(0.4, 3.5, 5.2);
+buildLavaPool(4.0, 5.0, 3.6);
 
 /* ---------- Smoke plume (particles) ---------- */
 const smokeCount = isLowPower?55:90;
