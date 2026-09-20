@@ -6,10 +6,41 @@ const AudioSys = (()=>{
   let ctx=null, master=null, muted=false;
   let rumbleGain, windGain, eruptGain;
   let running=false;
+  // Optional custom sound files — drop real MP3s at these paths next to index.html on your
+  // GitHub repo (e.g. a "sfx" folder) and they'll be used automatically; if a file isn't
+  // there yet, that sound just keeps using the built-in synthesized effect below, no errors.
+  const SAMPLE_URLS = {
+    eruption: 'sfx/eruption.mp3',   // played on every big eruption trigger (AudioSys.boom)
+    hit:      'sfx/hit.mp3',        // played whenever the player takes damage / gets hit
+  };
+  const samples = {};
+  let samplesRequested = false;
+  function loadSamples(){
+    if(samplesRequested) return; samplesRequested = true;
+    Object.keys(SAMPLE_URLS).forEach(name=>{
+      fetch(SAMPLE_URLS[name])
+        .then(res => res.ok ? res.arrayBuffer() : Promise.reject())
+        .then(buf => ctx.decodeAudioData(buf))
+        .then(decoded => { samples[name] = decoded; })
+        .catch(()=>{ /* no file there (yet) — keep using the synthesized sound */ });
+    });
+  }
+  // plays a loaded custom sample if one exists; returns true if it played, so the caller can
+  // fall back to the procedural sound when it didn't (file missing, still loading, etc.)
+  function playSample(name, volume, rateJitter){
+    const buf = samples[name];
+    if(!buf) return false;
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    if(rateJitter) src.playbackRate.value = 1 + (Math.random()-0.5)*rateJitter;
+    const g = ctx.createGain(); g.gain.value = volume==null?1:volume;
+    src.connect(g); g.connect(master); src.start();
+    return true;
+  }
   function ensure(){
     if(ctx) return;
     ctx = new (window.AudioContext||window.webkitAudioContext)();
     master = ctx.createGain(); master.gain.value=0.85; master.connect(ctx.destination);
+    loadSamples();
   }
   function noiseBuffer(seconds, kind){
     const len = ctx.sampleRate*seconds, buf = ctx.createBuffer(1,len,ctx.sampleRate);
@@ -48,6 +79,7 @@ const AudioSys = (()=>{
   }
   function boom(big){
     ensure();
+    if(playSample('eruption', big?1.0:0.7, 0.08)) return;
     const src = ctx.createBufferSource(); src.buffer = noiseBuffer(big?2.2:1.0,'brown');
     const lp = ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value= big?220:180;
     const g = ctx.createGain(); const now=ctx.currentTime;
@@ -59,6 +91,13 @@ const AudioSys = (()=>{
     osc.frequency.exponentialRampToValueAtTime(20, now+(big?1.8:0.8));
     const og = ctx.createGain(); og.gain.setValueAtTime(big?0.9:0.4, now); og.gain.exponentialRampToValueAtTime(0.0001, now+(big?1.8:0.8));
     osc.connect(og); og.connect(master); osc.start(); osc.stop(now+2.5);
+    // a sharp crack transient layered on top of the rumble, so it reads as an explosion, not just a thud
+    const crackSrc = ctx.createBufferSource(); crackSrc.buffer = noiseBuffer(0.18,'white');
+    const crackHp = ctx.createBiquadFilter(); crackHp.type='highpass'; crackHp.frequency.value=1200;
+    const crackG = ctx.createGain();
+    crackG.gain.setValueAtTime(big?0.55:0.3, now);
+    crackG.gain.exponentialRampToValueAtTime(0.0001, now+0.16);
+    crackSrc.connect(crackHp); crackHp.connect(crackG); crackG.connect(master); crackSrc.start();
   }
   function siren(){
     ensure();
@@ -73,11 +112,19 @@ const AudioSys = (()=>{
   }
   function hit(){
     ensure();
+    if(playSample('hit', 0.9, 0.15)) return;
     const now=ctx.currentTime;
     const osc=ctx.createOscillator(); osc.type='square'; osc.frequency.setValueAtTime(160,now);
     osc.frequency.exponentialRampToValueAtTime(40,now+0.25);
     const g=ctx.createGain(); g.gain.setValueAtTime(0.5,now); g.gain.exponentialRampToValueAtTime(0.0001,now+0.28);
     osc.connect(g); g.connect(master); osc.start(); osc.stop(now+0.3);
+    // a short thump of filtered noise gives the hit a physical, fleshy impact rather than a pure tone
+    const thumpSrc = ctx.createBufferSource(); thumpSrc.buffer = noiseBuffer(0.12,'brown');
+    const thumpLp = ctx.createBiquadFilter(); thumpLp.type='lowpass'; thumpLp.frequency.value=500;
+    const thumpG = ctx.createGain();
+    thumpG.gain.setValueAtTime(0.6, now);
+    thumpG.gain.exponentialRampToValueAtTime(0.0001, now+0.15);
+    thumpSrc.connect(thumpLp); thumpLp.connect(thumpG); thumpG.connect(master); thumpSrc.start();
   }
   function crackle(){
     ensure();
@@ -144,7 +191,7 @@ addEventListener('resize', ()=>{
 /* ---------- Lighting ---------- */
 const hemi = new THREE.HemisphereLight(0x88633f, 0x1a0f08, 0.55);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xffb37a, 0.9);
+const sun = new THREE.DirectionalLight(0xffb37a, 1.05);
 sun.position.set(-60,90,-40);
 sun.castShadow = true;
 sun.shadow.mapSize.set(isLowPower?768:1536, isLowPower?768:1536);
@@ -152,7 +199,7 @@ sun.shadow.camera.left=-120; sun.shadow.camera.right=120; sun.shadow.camera.top=
 sun.shadow.camera.far=400;
 scene.add(sun);
 
-const emberLight = new THREE.PointLight(0xff5a1f, 4, 400, 2);
+const emberLight = new THREE.PointLight(0xff5a1f, 5, 420, 2);
 emberLight.position.set(0,50,0);
 scene.add(emberLight);
 
@@ -222,13 +269,15 @@ groundGeo.rotateX(-Math.PI/2);
    height automatically match — no separate collision system needed. Stray off the narrow
    bridge deck and you drop into the ravine; find the bridge (or jump it) to cross clean. */
 const OBSTACLE_ZONES = [
-  {type:'ravine', cx:28,  cz:178, angle:0.0,  rx:9,  rz:6.5, depth:5.0, bridgeWidth:2.0, cleared:false},
+  {type:'ravine', cx:28,  cz:178, angle:0.0,  rx:9,  rz:6.5, depth:5.0, bridgeWidth:2.0, cleared:false, swingHost:true},
   {type:'ravine', cx:-45, cz:235, angle:0.55, rx:10, rz:7.0, depth:5.5, bridgeWidth:2.0, cleared:false},
   {type:'stairs', cx:65,  cz:205, angle:-0.3, rx:16, rz:9.0, height:6.5, reached:false},
   {type:'stones', cx:-70, cz:195, angle:0.2,  rx:18, rz:7.0, depth:5.5, cleared:false,
     stones:[{u:-13,v:0.2,r:2.3},{u:-5,v:2.2,r:2.1},{u:3,v:-2.2,r:2.2},{u:11,v:1.6,r:2.1},{u:17,v:-0.6,r:2.2}]},
   {type:'ravine', cx:90,  cz:250, angle:0.8,  rx:11, rz:6.0, depth:6.0, bridgeWidth:1.1, beam:true, cleared:false},
   {type:'ravine', cx:150, cz:130, angle:1.3,  rx:9,  rz:5.5, depth:5.5, bridgeWidth:0.9, beam:true, cleared:false},
+  {type:'stones', cx:100, cz:230, angle:-0.4, rx:15, rz:7.0, depth:5.0, cleared:false,
+    stones:[{u:-11,v:0.3,r:2.2},{u:-3,v:-2.0,r:2.1},{u:5,v:2.0,r:2.2},{u:13,v:-0.4,r:2.1}]},
 ];
 function zoneLocal(x,z,ob){
   const dx=x-ob.cx, dz=z-ob.cz, ca=Math.cos(ob.angle), sa=Math.sin(ob.angle);
@@ -246,6 +295,12 @@ const ZIP_END = {
   x: ZIP_START.x + Math.cos(stairsZone.angle)*68 + Math.sin(stairsZone.angle)*18,
   z: ZIP_START.z + Math.sin(stairsZone.angle)*68 - Math.cos(stairsZone.angle)*18,
 };
+
+// rope swing — an alternative, faster way across the first ravine: grab it near one lip and
+// swing straight over to the other, instead of using the plank bridge
+const swingZone = OBSTACLE_ZONES.find(o=>o.swingHost);
+const SWING_START = { x: swingZone.cx-swingZone.rx*1.15, z: swingZone.cz+swingZone.rz*0.5 };
+const SWING_END   = { x: swingZone.cx+swingZone.rx*1.15, z: swingZone.cz+swingZone.rz*0.5 };
 function ravineDelta(x,z,ob){
   const {u,v} = zoneLocal(x,z,ob);
   if(Math.abs(v) < ob.bridgeWidth*0.5 && Math.abs(u) < ob.rx*1.12) return 0.12; // flat plank deck
@@ -424,12 +479,47 @@ function buildZipline(){
 }
 buildZipline();
 
+/* ---------- Rope swing over the first ravine — a fast alternative to the plank bridge ---------- */
+function buildRopeSwing(){
+  const postMat = new THREE.MeshStandardMaterial({color:0x5a4530, roughness:0.9});
+  const ropeMat = new THREE.MeshStandardMaterial({color:0x3a2c1a, roughness:0.95});
+  const gy = terrainHeight(SWING_START.x, SWING_START.z);
+  const beamY = gy+5.2;
+  const postA = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.13,5.2,6), postMat);
+  postA.position.set(SWING_START.x, gy+2.6, SWING_START.z);
+  scene.add(postA);
+  const postB = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.13,5.2,6), postMat);
+  postB.position.set(SWING_END.x, terrainHeight(SWING_END.x,SWING_END.z)+2.6, SWING_END.z);
+  scene.add(postB);
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08, Math.hypot(SWING_END.x-SWING_START.x, SWING_END.z-SWING_START.z), 6), postMat);
+  beam.position.set((SWING_START.x+SWING_END.x)/2, beamY, (SWING_START.z+SWING_END.z)/2);
+  beam.rotation.z = Math.PI/2;
+  beam.rotation.y = -Math.atan2(SWING_END.x-SWING_START.x, SWING_END.z-SWING_START.z)+Math.PI/2;
+  scene.add(beam);
+  // the hanging rope + handle, sitting at the near anchor waiting to be grabbed
+  const midX=SWING_START.x, midZ=SWING_START.z;
+  const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,3.0,5), ropeMat);
+  rope.position.set(midX, beamY-1.5, midZ);
+  scene.add(rope);
+  const handle = new THREE.Mesh(new THREE.SphereGeometry(0.13,8,6), postMat);
+  handle.position.set(midX, beamY-3.0, midZ);
+  scene.add(handle);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.9,0.45),
+    new THREE.MeshStandardMaterial({color:0x7bffe0, side:THREE.DoubleSide, roughness:0.7}));
+  sign.position.set(midX, gy+1.0, midZ-0.6);
+  sign.rotation.y = -Math.atan2(SWING_END.x-SWING_START.x, SWING_END.z-SWING_START.z)+Math.PI/2;
+  scene.add(sign);
+}
+buildRopeSwing();
+
 /* ---------- Fallen tree-trunk obstacles — block the path unless you time a jump over them ---------- */
 const LOG_OBSTACLES = [
   {x:6,   z:150, angle:0.3,  length:8, radius:0.72, cleared:false},
   {x:-20, z:270, angle:-0.8, length:7, radius:0.68, cleared:false},
   {x:105, z:130, angle:1.0,  length:7.5, radius:0.7, cleared:false},
   {x:-95, z:150, angle:-0.5, length:8, radius:0.75, cleared:false},
+  {x:60,  z:240, angle:0.6,  length:7.5, radius:0.7, cleared:false},
+  {x:-110,z:180, angle:-0.2, length:8, radius:0.75, cleared:false},
 ];
 const logMat = new THREE.MeshStandardMaterial({color:0x4a3320, roughness:0.95, flatShading:true});
 const logCapMat = new THREE.MeshStandardMaterial({color:0x8a6a42, roughness:0.9, flatShading:true});
@@ -504,10 +594,66 @@ function checkBouncePads(px,pz,isGrounded){
   return null;
 }
 
+/* ---------- Geysers — periodic steam blasts, telegraphed by a rising hiss before they fire ---------- */
+const GEYSERS = [
+  {x:40,  z:150, cycle:7.5, offset:0,   radius:3.0},
+  {x:-70, z:220, cycle:8.5, offset:3.5, radius:3.0},
+  {x:120, z:145, cycle:7.0, offset:5.2, radius:2.8},
+];
+const geyserSteamTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=64;
+  const ctx2=c.getContext('2d');
+  const g=ctx2.createRadialGradient(32,32,0,32,32,32);
+  g.addColorStop(0,'rgba(255,255,255,0.95)'); g.addColorStop(0.5,'rgba(235,230,222,0.55)'); g.addColorStop(1,'rgba(220,215,205,0)');
+  ctx2.fillStyle=g; ctx2.fillRect(0,0,64,64);
+  return new THREE.CanvasTexture(c);
+})();
+const geyserRockMat = new THREE.MeshStandardMaterial({color:0x3a332c, roughness:1, flatShading:true});
+GEYSERS.forEach(g=>{
+  const y = terrainHeight(g.x,g.z);
+  for(let i=0;i<7;i++){
+    const a=(i/7)*Math.PI*2, rr=g.radius*0.95;
+    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.45+Math.random()*0.3,0), geyserRockMat);
+    rock.position.set(g.x+Math.cos(a)*rr, y+0.15, g.z+Math.sin(a)*rr);
+    rock.rotation.set(Math.random()*6,Math.random()*6,Math.random()*6);
+    rock.castShadow=false;
+    scene.add(rock);
+  }
+  g.sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:geyserSteamTex, transparent:true, opacity:0.3, depthWrite:false}));
+  g.sprite.position.set(g.x, y+1.0, g.z);
+  g.sprite.scale.set(1.0,1.8,1);
+  scene.add(g.sprite);
+  g._hitThisBurst=false;
+});
+function updateGeysers(dt){
+  for(const g of GEYSERS){
+    const t = (elapsed+g.offset) % g.cycle;
+    const burstStart = g.cycle-1.0, burstEnd = g.cycle-0.15, warnStart = g.cycle-2.4;
+    let scale=1, bright=0.3;
+    if(t>warnStart && t<burstStart){
+      const w=(t-warnStart)/(burstStart-warnStart);
+      scale = 1+w*2.2; bright=0.3+w*0.5;
+    } else if(t>=burstStart && t<burstEnd){
+      scale = 5+Math.sin((t-burstStart)*40)*0.6; bright=1.0;
+      const dist = Math.hypot(player.position.x-g.x, player.position.z-g.z);
+      if(dist<g.radius && jumpY<1.0 && !g._hitThisBurst){
+        damagePlayer(20); shakeAmt=Math.max(shakeAmt,0.5); AudioSys.hit();
+        g._hitThisBurst=true;
+      } else if(dist<g.radius+2.5 && jumpY>=1.0 && !g._hitThisBurst){
+        g._hitThisBurst=true;
+        registerNearMiss(30);
+      }
+    } else {
+      g._hitThisBurst=false; scale=1; bright=0.3;
+    }
+    g.sprite.scale.set(scale*1.0, scale*1.8, 1);
+    g.sprite.material.opacity = Math.min(0.9, bright);
+  }
+}
 
 // scattered rocks / dead trees for texture
 const rockGeo = new THREE.DodecahedronGeometry(1,0);
-const rockMat = new THREE.MeshStandardMaterial({color:0x362a20, roughness:1, flatShading:true});
+const rockMat = new THREE.MeshStandardMaterial({color:0x554839, roughness:1, flatShading:true});
 const rockMesh = new THREE.InstancedMesh(rockGeo, rockMat, isLowPower?120:220);
 {
   const dummy = new THREE.Object3D();
@@ -531,6 +677,9 @@ scene.add(rockMesh);
 const volcano = new THREE.Group();
 const coneGeo = new THREE.ConeGeometry(60, 100, isLowPower?44:56, isLowPower?7:9, true);
 const conePos = coneGeo.attributes.position;
+// world-Y that raw local y=0 corresponds to, once the cone is shifted +50 and the volcano
+// group is placed — needed so the sculpted base can be welded exactly onto the ground mesh below
+const volcanoBaseY = terrainHeight(0,0) - 8 + 50;
 for(let i=0;i<conePos.count;i++){
   const x=conePos.getX(i), y=conePos.getY(i), z=conePos.getZ(i);
   const ang = Math.atan2(z,x);
@@ -540,9 +689,19 @@ for(let i=0;i<conePos.count;i++){
   // radial erosion gullies raked down the slope, like a real stratovolcano's barranco ridges
   const gully = Math.pow(Math.abs(Math.sin(ang*9 + Math.sin(y*0.05)*0.6)), 2.2) * 2.9 * Math.min(1, Math.max(0,(50-y)/60));
   const dir = new THREE.Vector3(x,0,z).normalize();
-  conePos.setX(i, x+dir.x*(n*0.7+fine+micro-gully*0.55));
-  conePos.setZ(i, z+dir.z*(n*0.7+fine+micro-gully*0.55));
-  conePos.setY(i, y + Math.sin(x*0.15+z*0.18)*1.1 + Math.sin(x*0.6-z*0.5)*0.22 - gully*0.65);
+  const newX = x+dir.x*(n*0.7+fine+micro-gully*0.55);
+  const newZ = z+dir.z*(n*0.7+fine+micro-gully*0.55);
+  const sculptedY = y + Math.sin(x*0.15+z*0.18)*1.1 + Math.sin(x*0.6-z*0.5)*0.22 - gully*0.65;
+  // weld the foot of the mountain to the actual ground height directly beneath it, fading
+  // out higher up the slope so the sculpted shape takes over — this is what stops the
+  // mountain's base from hovering above (or sinking through) the surrounding terrain
+  const groundLocalY = terrainHeight(newX, newZ) - volcanoBaseY;
+  const t = (y+50)/100; // 0 at the very base, 1 at the apex — from the undisplaced height
+  const weld = Math.max(0, 1 - t/0.22);
+  const finalY = sculptedY + (groundLocalY - sculptedY)*weld;
+  conePos.setX(i, newX);
+  conePos.setZ(i, newZ);
+  conePos.setY(i, finalY);
 }
 coneGeo.computeVertexNormals();
 {
@@ -601,6 +760,7 @@ const rockTex = (()=>{
 })();
 const coneMat = new THREE.MeshStandardMaterial({color:0xffffff, vertexColors:true, map:rockTex, roughness:0.97, flatShading:true});
 const cone = new THREE.Mesh(coneGeo, coneMat);
+rockMat.map = rockTex; rockMat.needsUpdate = true; // scattered field rocks share the volcano's rock texture
 cone.position.y = 50;
 cone.castShadow = true; cone.receiveShadow = true;
 volcano.add(cone);
@@ -617,7 +777,9 @@ const craterTex = (()=>{
     const cx=Math.random()*256, cy=Math.random()*256, r=6+Math.random()*24;
     ctx2.beginPath(); ctx2.ellipse(cx,cy,r,r*0.55,Math.random()*Math.PI,0,Math.PI*2); ctx2.fill();
   }
-  return new THREE.CanvasTexture(c);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  return tex;
 })();
 const craterGeo = new THREE.CircleGeometry(16,32);
 const craterMat = new THREE.MeshBasicMaterial({map:craterTex});
@@ -803,7 +965,7 @@ function buildLavaFlow(angle, widthTop, widthBot, wobble){
   }
   geo.computeVertexNormals();
   const mat = new THREE.MeshStandardMaterial({
-    map: lavaFlowTex, emissive:0xff5a1f, emissiveMap:lavaFlowTex, emissiveIntensity:2.2,
+    map: lavaFlowTex, emissive:0xff5a1f, emissiveMap:lavaFlowTex, emissiveIntensity:2.6,
     roughness:0.85, metalness:0
   });
   mat.map.repeat.set(1,4); mat.emissiveMap.repeat.set(1,4);
@@ -816,6 +978,10 @@ buildLavaFlow(0.4, 0.55, 2.6, 3.5);
 buildLavaFlow(2.1, 0.4, 2.0, 4.5);
 buildLavaFlow(-1.3, 0.45, 2.3, 3.0);
 buildLavaFlow(4.0, 0.35, 1.8, 5.0);
+buildLavaFlow(5.3, 0.5, 2.2, 4.0);
+buildLavaFlow(1.1, 0.35, 1.6, 2.5);
+buildLavaFlow(3.2, 0.6, 2.8, 3.8);
+buildLavaFlow(-2.4, 0.4, 1.9, 4.2);
 
 // small pooled lava at the foot of the main flow, where it spreads out at the base
 function buildLavaPool(angle, wobble, r){
@@ -836,6 +1002,50 @@ function buildLavaPool(angle, wobble, r){
 }
 buildLavaPool(0.4, 3.5, 5.2);
 buildLavaPool(4.0, 5.0, 3.6);
+buildLavaPool(5.3, 4.0, 4.5);
+buildLavaPool(3.2, 3.8, 5.8);
+
+/* ---------- Volcano skirt — a finely-tessellated collar welding the mountain's foot to the
+   ground. The ground mesh itself is coarse (for performance), so on the steep slope right at
+   the volcano's base its flat facets can visibly miss the mountain's sculpted edge and let
+   daylight show through underneath — this dense ring, built from the same height function,
+   hugs the true curve and hides that seam completely. ---------- */
+(function buildVolcanoSkirt(){
+  const innerR = 50, outerR = 112, rings = 9, segs = isLowPower?40:56;
+  const positions=[], colors=[], indices=[];
+  const innerY = volcano.position.y + 1.0;
+  const rockCol = new THREE.Color(0x6b6156), dirtCol = new THREE.Color(0x4a3625);
+  for(let ring=0; ring<=rings; ring++){
+    const rt = ring/rings;
+    const r = innerR + (outerR-innerR)*rt;
+    for(let i=0;i<=segs;i++){
+      const a = (i/segs)*Math.PI*2;
+      const x = Math.sin(a)*r, z = Math.cos(a)*r;
+      const groundY = terrainHeight(x,z);
+      const y = innerY + (groundY-innerY)*Math.min(1, rt*1.2);
+      positions.push(x,y,z);
+      const col = rockCol.clone().lerp(dirtCol, rt);
+      const v = 0.85+Math.random()*0.3;
+      colors.push(col.r*v, col.g*v, col.b*v);
+    }
+  }
+  const rowLen = segs+1;
+  for(let ring=0; ring<rings; ring++){
+    for(let i=0;i<segs;i++){
+      const a=ring*rowLen+i, b=a+1, c=a+rowLen, d=c+1;
+      indices.push(a,c,b, b,c,d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({vertexColors:true, map:rockTex, roughness:1, flatShading:true});
+  const skirt = new THREE.Mesh(geo, mat);
+  skirt.receiveShadow = true;
+  scene.add(skirt);
+})();
 
 /* ---------- Smoke plume (particles) ---------- */
 const smokeCount = isLowPower?55:90;
@@ -876,41 +1086,107 @@ const ashCount = isLowPower?1100:2000;
 const ashGeo = new THREE.BufferGeometry();
 const ashPos = new Float32Array(ashCount*3);
 const ashVel = new Float32Array(ashCount);
-for(let i=0;i<ashCount;i++){
-  ashPos[i*3]=(Math.random()-0.5)*400;
-  ashPos[i*3+1]=Math.random()*140;
-  ashPos[i*3+2]=(Math.random()-0.5)*400;
-  ashVel[i]=0.3+Math.random()*0.5;
+const ashColors = new Float32Array(ashCount*3);
+const ashSway = new Float32Array(ashCount);
+{
+  const light=new THREE.Color(0xb8ada0), dark=new THREE.Color(0x5c534a);
+  for(let i=0;i<ashCount;i++){
+    ashPos[i*3]=(Math.random()-0.5)*400;
+    ashPos[i*3+1]=Math.random()*140;
+    ashPos[i*3+2]=(Math.random()-0.5)*400;
+    ashVel[i]=0.3+Math.random()*0.5;
+    ashSway[i]=Math.random()*Math.PI*2;
+    const c = light.clone().lerp(dark, Math.random());
+    ashColors[i*3]=c.r; ashColors[i*3+1]=c.g; ashColors[i*3+2]=c.b;
+  }
 }
 ashGeo.setAttribute('position', new THREE.BufferAttribute(ashPos,3));
-const ashMat = new THREE.PointsMaterial({color:0x9a8f80, size:0.45, transparent:true, opacity:0.7, depthWrite:false});
+ashGeo.setAttribute('color', new THREE.BufferAttribute(ashColors,3));
+const ashFlakeTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=32;
+  const ctx2=c.getContext('2d');
+  const g=ctx2.createRadialGradient(16,16,0,16,16,16);
+  g.addColorStop(0,'rgba(255,255,255,0.95)'); g.addColorStop(0.6,'rgba(220,210,195,0.55)'); g.addColorStop(1,'rgba(200,190,175,0)');
+  ctx2.fillStyle=g; ctx2.fillRect(0,0,32,32);
+  return new THREE.CanvasTexture(c);
+})();
+const ashMat = new THREE.PointsMaterial({map:ashFlakeTex, vertexColors:true, size:0.5, transparent:true, opacity:0.75, depthWrite:false});
 const ashField = new THREE.Points(ashGeo, ashMat);
 scene.add(ashField);
 
 /* ---------- Player ---------- */
 const player = new THREE.Group();
-const bodyMat = new THREE.MeshStandardMaterial({color:0x2255dd, roughness:0.6});
-const skinMat = new THREE.MeshStandardMaterial({color:0xe0a878, roughness:0.7});
+const bodyMat = new THREE.MeshStandardMaterial({color:0xe0501f, roughness:0.75, metalness:0.05}); // jacket
+const pantsMat = new THREE.MeshStandardMaterial({color:0x2b2f3a, roughness:0.85});
+const skinMat = new THREE.MeshStandardMaterial({color:0xe0a878, roughness:0.6, metalness:0.02});
+const hairMat = new THREE.MeshStandardMaterial({color:0x241c16, roughness:0.7});
+const shoeMat = new THREE.MeshStandardMaterial({color:0x18161a, roughness:0.55, metalness:0.1});
+const bagMat = new THREE.MeshStandardMaterial({color:0x2f5d3a, roughness:0.8});
 function capsuleLike(radius, length, radialSeg){
-  // r128-safe stand-in for CapsuleGeometry: cylinder body + sphere caps merged as a group-like single mesh via CylinderGeometry with rounded ends look
-  const g = new THREE.CylinderGeometry(radius, radius, length, radialSeg||8, 1, false);
+  return new THREE.CylinderGeometry(radius, radius, length, radialSeg||8, 1, false);
+}
+// limbs are small groups (cylinder + rounded end caps) so the existing walk-cycle code, which
+// just rotates legL/legR/armL/armR, gets natural-looking rounded joints for free
+function limb(mat, radius, length, tipTaper){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(radius*(tipTaper||1), radius, length, 8), mat);
+  body.castShadow=true; g.add(body);
+  const capTop = new THREE.Mesh(new THREE.SphereGeometry(radius,8,6), mat);
+  capTop.position.y=length/2; capTop.castShadow=true; g.add(capTop);
+  const capBot = new THREE.Mesh(new THREE.SphereGeometry(radius*(tipTaper||1),8,6), mat);
+  capBot.position.y=-length/2; capBot.castShadow=true; g.add(capBot);
   return g;
 }
+
 const torso = new THREE.Mesh(capsuleLike(0.32,0.62,10), bodyMat);
 torso.position.y=1.05; torso.castShadow=true; player.add(torso);
 const torsoCapTop = new THREE.Mesh(new THREE.SphereGeometry(0.32,10,8), bodyMat);
 torsoCapTop.position.y=1.05+0.31; torsoCapTop.castShadow=true; player.add(torsoCapTop);
-const torsoCapBot = new THREE.Mesh(new THREE.SphereGeometry(0.32,10,8), bodyMat);
-torsoCapBot.position.y=1.05-0.31; torsoCapBot.castShadow=true; player.add(torsoCapBot);
-const head = new THREE.Mesh(new THREE.SphereGeometry(0.24,12,10), skinMat);
+const torsoCapBot = new THREE.Mesh(new THREE.SphereGeometry(0.33,10,8), pantsMat);
+torsoCapBot.position.y=1.05-0.33; torsoCapBot.castShadow=true; player.add(torsoCapBot);
+
+// backpack — a rounded box slung on the back, bounces slightly with the run cycle
+const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.34,0.4,0.2), bagMat);
+backpack.position.set(0,1.08,0.24); backpack.castShadow=true; player.add(backpack);
+const backpackTop = new THREE.Mesh(new THREE.SphereGeometry(0.17,8,6), bagMat);
+backpackTop.position.set(0,1.3,0.24); backpackTop.scale.set(1,0.6,0.9); backpackTop.castShadow=true; player.add(backpackTop);
+
+const head = new THREE.Mesh(new THREE.SphereGeometry(0.24,14,12), skinMat);
 head.position.y=1.62; head.castShadow=true; player.add(head);
-const legGeo = capsuleLike(0.11,0.5,8);
-const legMat = new THREE.MeshStandardMaterial({color:0x22262e, roughness:0.8});
-const legL = new THREE.Mesh(legGeo, legMat); legL.position.set(-0.15,0.45,0); legL.castShadow=true; player.add(legL);
-const legR = new THREE.Mesh(legGeo, legMat); legR.position.set(0.15,0.45,0); legR.castShadow=true; player.add(legR);
-const armGeo = capsuleLike(0.09,0.45,8);
-const armL = new THREE.Mesh(armGeo, bodyMat); armL.position.set(-0.42,1.05,0); armL.castShadow=true; player.add(armL);
-const armR = new THREE.Mesh(armGeo, bodyMat); armR.position.set(0.42,1.05,0); armR.castShadow=true; player.add(armR);
+const hair = new THREE.Mesh(new THREE.SphereGeometry(0.255,12,10,0,Math.PI*2,0,Math.PI*0.62), hairMat);
+hair.position.y=1.66; hair.castShadow=true; player.add(hair);
+
+const legMat = pantsMat;
+const legL = limb(legMat, 0.115, 0.5); legL.position.set(-0.15,0.45,0); player.add(legL);
+const legR = limb(legMat, 0.115, 0.5); legR.position.set(0.15,0.45,0); player.add(legR);
+const armL = limb(bodyMat, 0.095, 0.45, 0.82); armL.position.set(-0.42,1.05,0); player.add(armL);
+const armR = limb(bodyMat, 0.095, 0.45, 0.82); armR.position.set(0.42,1.05,0); player.add(armR);
+[legL,legR].forEach(leg=>{
+  const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.16,0.11,0.26), shoeMat);
+  shoe.position.set(0,-0.29,0.05); shoe.castShadow=true; leg.add(shoe);
+});
+[armL,armR].forEach(arm=>{
+  const hand = new THREE.Mesh(new THREE.SphereGeometry(0.085,8,6), skinMat);
+  hand.position.y=-0.27; hand.castShadow=true; arm.add(hand);
+});
+
+// soft contact-shadow blob under the player's feet — cheap fake AO that reads as real
+// ground contact even where the real-time shadow map doesn't reach (low-power devices, distant view)
+const blobShadowTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=64;
+  const ctx2=c.getContext('2d');
+  const g=ctx2.createRadialGradient(32,32,0,32,32,32);
+  g.addColorStop(0,'rgba(0,0,0,0.55)'); g.addColorStop(0.7,'rgba(0,0,0,0.25)'); g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx2.fillStyle=g; ctx2.fillRect(0,0,64,64);
+  return new THREE.CanvasTexture(c);
+})();
+const blobShadow = new THREE.Mesh(new THREE.PlaneGeometry(1,1),
+  new THREE.MeshBasicMaterial({map:blobShadowTex, transparent:true, depthWrite:false}));
+blobShadow.rotation.x = -Math.PI/2;
+blobShadow.renderOrder = 1;
+scene.add(blobShadow);
+
+
 
 const START_DIST = 130;
 const GOAL_DIST = 310;
@@ -924,7 +1200,15 @@ const camDist = 6.2, camHeight = 2.6;
 
 /* ============================== INPUT ============================== */
 const keys = {};
-addEventListener('keydown', e=>{ keys[e.code]=true; });
+addEventListener('keydown', e=>{
+  keys[e.code]=true;
+  // Space/arrow keys are game controls — without this, if a <button> (Start/Retry) still has
+  // browser focus, the browser also treats Space as "click the focused button", which was
+  // silently resetting the run back to the start. Block that default behavior here.
+  if(e.code==='Space' || e.code==='ArrowUp' || e.code==='ArrowDown' || e.code==='ArrowLeft' || e.code==='ArrowRight'){
+    e.preventDefault();
+  }
+});
 addEventListener('keyup', e=>{ keys[e.code]=false; });
 
 let joyVec = {x:0,y:0};
@@ -1017,6 +1301,8 @@ let boulders=[], nextBoulderAt=18;
 let ziplineActive=false, ziplineT=0, zipUsedThisRun=false;
 const zipFrom=new THREE.Vector3(), zipTo=new THREE.Vector3();
 const ZIP_DURATION=1.6;
+let swingActive=false, swingT=0, swingCooldownUntil=0;
+const SWING_DURATION=1.1, SWING_ARC_HEIGHT=3.2;
 let eruptGlow=0;
 
 // difficulty ramps up with progress toward the goal, then eases off right at the safe zone
@@ -1073,6 +1359,15 @@ function fmtTime(s){
 /* ---------- Bomb (volcanic rock) pool ---------- */
 const bombGeo = new THREE.IcosahedronGeometry(0.9,0);
 const bombMat = new THREE.MeshStandardMaterial({color:0xff5522, emissive:0xff3300, emissiveIntensity:1.2, roughness:0.6});
+const bombGlowTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=32;
+  const ctx2=c.getContext('2d');
+  const g=ctx2.createRadialGradient(16,16,0,16,16,16);
+  g.addColorStop(0,'rgba(255,240,190,0.95)'); g.addColorStop(0.45,'rgba(255,140,40,0.6)'); g.addColorStop(1,'rgba(255,90,20,0)');
+  ctx2.fillStyle=g; ctx2.fillRect(0,0,32,32);
+  return new THREE.CanvasTexture(c);
+})();
+const bombGlowMat = new THREE.SpriteMaterial({map:bombGlowTex, transparent:true, depthWrite:false, blending:THREE.AdditiveBlending});
 function spawnBomb(big){
   // land near the player's current radial position (not the map center) so the threat
   // stays relevant however far you've already fled, and tightens as the volcano's fury grows.
@@ -1087,6 +1382,9 @@ function spawnBomb(big){
   mesh.scale.setScalar(s);
   mesh.castShadow=false;
   mesh.position.set(0, 60+Math.random()*10, 0);
+  const glow = new THREE.Sprite(bombGlowMat);
+  glow.scale.setScalar(s*3.6);
+  mesh.add(glow);
   scene.add(mesh);
   const flightTime = 1.5+Math.random()*0.9 + targetDist*0.0055;
   bombs.push({mesh, start:performance.now(), flightTime, from:new THREE.Vector3(0,55,0),
@@ -1114,6 +1412,32 @@ function updateBombs(dt, now){
       setTimeout(()=>{}, 0);
       bombs.splice(i,1);
     }
+  }
+}
+
+/* ---------- Mushroom ash column — a few big smoke sprites that billow up on a major eruption ---------- */
+let ashPuffs=[];
+function spawnMushroomCloud(){
+  crater.getWorldPosition(craterWorld);
+  const puffCount = isLowPower?3:5;
+  for(let i=0;i<puffCount;i++){
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:smokeTex, color:0x362e28, transparent:true, opacity:0.78, depthWrite:false}));
+    const ang=Math.random()*Math.PI*2, r=Math.random()*8;
+    sprite.position.set(craterWorld.x+Math.cos(ang)*r, craterWorld.y+6+Math.random()*10, craterWorld.z+Math.sin(ang)*r);
+    sprite.scale.set(14,14,1);
+    scene.add(sprite);
+    ashPuffs.push({sprite, age:0, life:5+Math.random()*2, riseSpeed:4+Math.random()*3, growTo:60+Math.random()*30});
+  }
+}
+function updateAshPuffs(dt){
+  for(let i=ashPuffs.length-1;i>=0;i--){
+    const p=ashPuffs[i]; p.age+=dt;
+    const t=p.age/p.life;
+    p.sprite.position.y += p.riseSpeed*dt*(1-t*0.5);
+    const s = 14 + (p.growTo-14)*Math.min(1,t*1.6);
+    p.sprite.scale.set(s,s,1);
+    p.sprite.material.opacity = 0.78*(1-t);
+    if(t>=1){ scene.remove(p.sprite); ashPuffs.splice(i,1); }
   }
 }
 
@@ -1356,19 +1680,35 @@ function updateShockwave(dt){
 const fountainCount = isLowPower?150:260;
 const fountainGeo = new THREE.BufferGeometry();
 const fountainPos = new Float32Array(fountainCount*3);
+const fountainColors = new Float32Array(fountainCount*3);
 const fountainData = [];
 for(let i=0;i<fountainCount;i++){
   fountainPos[i*3]=0; fountainPos[i*3+1]=-999; fountainPos[i*3+2]=0;
+  fountainColors[i*3]=1; fountainColors[i*3+1]=0.8; fountainColors[i*3+2]=0.4;
   fountainData.push({vx:0,vy:0,vz:0,life:0,maxLife:0,active:false});
 }
 fountainGeo.setAttribute('position', new THREE.BufferAttribute(fountainPos,3));
-const fountainMat = new THREE.PointsMaterial({color:0xffb347, size:2.4, transparent:true, opacity:0.95, depthWrite:false});
+fountainGeo.setAttribute('color', new THREE.BufferAttribute(fountainColors,3));
+const fountainGlowTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=32;
+  const ctx2=c.getContext('2d');
+  const g=ctx2.createRadialGradient(16,16,0,16,16,16);
+  g.addColorStop(0,'rgba(255,255,255,1)'); g.addColorStop(0.4,'rgba(255,200,100,0.9)'); g.addColorStop(1,'rgba(255,120,30,0)');
+  ctx2.fillStyle=g; ctx2.fillRect(0,0,32,32);
+  return new THREE.CanvasTexture(c);
+})();
+const fountainMat = new THREE.PointsMaterial({map:fountainGlowTex, vertexColors:true, size:3.0, transparent:true, opacity:0.95, depthWrite:false, blending:THREE.AdditiveBlending});
 const fountain = new THREE.Points(fountainGeo, fountainMat);
 scene.add(fountain);
 const craterWorld = new THREE.Vector3();
+const hotCol = new THREE.Color(0xfff3c0), coolCol = new THREE.Color(0x7a1c04);
 function updateFountain(dt, now){
   crater.getWorldPosition(craterWorld);
   const posAttr = fountainGeo.attributes.position;
+  const colAttr = fountainGeo.attributes.color;
+  // idle spatter — a real active lava lake never sits perfectly still, even between major eruptions
+  const idleChance = eruptionActive ? 0 : dt*(1.6+volcanoPower*0.8);
+  let idleToSpawn = Math.random()<idleChance ? 1 : 0;
   if(eruptionActive){
     // spawn new jets
     let toSpawn = 6;
@@ -1379,7 +1719,20 @@ function updateFountain(dt, now){
         const ang = Math.random()*Math.PI*2, sp = 6+Math.random()*14, up = 22+Math.random()*20;
         d.vx=Math.cos(ang)*sp; d.vz=Math.sin(ang)*sp; d.vy=up;
         posAttr.setXYZ(i, craterWorld.x+(Math.random()-0.5)*6, craterWorld.y, craterWorld.z+(Math.random()-0.5)*6);
+        colAttr.setXYZ(i, hotCol.r, hotCol.g, hotCol.b);
         toSpawn--;
+      }
+    }
+  } else if(idleToSpawn>0){
+    for(let i=0;i<fountainCount && idleToSpawn>0;i++){
+      const d = fountainData[i];
+      if(!d.active){
+        d.active=true; d.life=0; d.maxLife=0.7+Math.random()*0.5;
+        const ang = Math.random()*Math.PI*2, sp=1.5+Math.random()*3, up=6+Math.random()*7;
+        d.vx=Math.cos(ang)*sp; d.vz=Math.sin(ang)*sp; d.vy=up;
+        posAttr.setXYZ(i, craterWorld.x+(Math.random()-0.5)*4, craterWorld.y, craterWorld.z+(Math.random()-0.5)*4);
+        colAttr.setXYZ(i, hotCol.r, hotCol.g, hotCol.b);
+        idleToSpawn--;
       }
     }
   }
@@ -1391,8 +1744,12 @@ function updateFountain(dt, now){
     d.vy -= 26*dt;
     const x = posAttr.getX(i)+d.vx*dt, y=posAttr.getY(i)+d.vy*dt, z=posAttr.getZ(i)+d.vz*dt;
     posAttr.setXYZ(i, x, Math.max(y, terrainHeight(x,z)-2), z);
+    const cool = Math.min(1, d.life/d.maxLife);
+    const c = hotCol.clone().lerp(coolCol, cool);
+    colAttr.setXYZ(i, c.r, c.g, c.b);
   }
   posAttr.needsUpdate = true;
+  colAttr.needsUpdate = true;
   fountainMat.opacity = eruptionActive ? 0.95 : 0.0;
 }
 
@@ -1528,6 +1885,7 @@ function triggerEruption(){
   shakeAmt = 1.4;
   spawnShockwave();
   spawnLightning();
+  spawnMushroomCloud();
   flashScreen(0.4);
   const burstCount = Math.round(26 * volcanoPower);
   for(let i=0;i<burstCount;i++) setTimeout(()=>spawnBomb(true), i*90);
@@ -1545,11 +1903,11 @@ let lastTime = performance.now();
 let walkCycle=0;
 
 function currentScore(){
-  return Math.round(distTraveled*4) + score + (over ? 0 : 0);
+  return Math.round(Math.max(0,distTraveled-START_DIST)*4) + score + (over ? 0 : 0);
 }
 
 function updateHUD(){
-  distVal.textContent = Math.round(distTraveled);
+  distVal.textContent = Math.round(Math.max(0,distTraveled-START_DIST));
   timeVal.textContent = fmtTime(elapsed);
   visBar.style.width = visibility+'%';
   scoreVal.textContent = currentScore();
@@ -1565,7 +1923,7 @@ function endGame(win){
   over = true; started=false;
   const finalScore = currentScore() + (win ? 500 : 0);
   document.getElementById('goTitle').textContent = win ? '避難成功！' : '力尽きた…';
-  document.getElementById('goDist').textContent = Math.round(distTraveled);
+  document.getElementById('goDist').textContent = Math.round(Math.max(0,distTraveled-START_DIST));
   document.getElementById('goTime').textContent = fmtTime(elapsed);
   const goScoreEl = document.getElementById('goScore');
   if(goScoreEl) goScoreEl.textContent = finalScore;
@@ -1605,6 +1963,26 @@ function movePlayer(dt){
     if(ziplineT>=1){
       ziplineActive=false; grounded=true; jumpY=0; jumpVel=0;
       showToast('ジップライン到着！', '#7bffa0');
+    }
+    return;
+  }
+  if(swingActive){
+    swingT += dt/SWING_DURATION;
+    const t = Math.min(1, swingT);
+    const x = THREE.MathUtils.lerp(SWING_START.x, SWING_END.x, t);
+    const z = THREE.MathUtils.lerp(SWING_START.z, SWING_END.z, t);
+    const arcY = Math.sin(t*Math.PI)*SWING_ARC_HEIGHT;
+    player.position.set(x, terrainHeight(x,z)+arcY, z);
+    distTraveled = Math.hypot(x,z);
+    const lookDir = new THREE.Vector3(SWING_END.x-SWING_START.x, 0, SWING_END.z-SWING_START.z);
+    player.rotation.y = Math.atan2(lookDir.x, lookDir.z);
+    player.rotation.z = Math.sin(t*Math.PI)*0.2;
+    shakeAmt = Math.max(shakeAmt, 0.08);
+    if(swingT>=1){
+      swingActive=false; grounded=true; jumpY=0; jumpVel=0; player.rotation.z=0;
+      swingCooldownUntil = elapsed+1.2;
+      registerNearMiss(35);
+      showToast('ロープスイング成功！', '#7bffe0');
     }
     return;
   }
@@ -1650,6 +2028,8 @@ function movePlayer(dt){
     legR.rotation.x = -Math.sin(walkCycle)*0.7;
     armL.rotation.x = -Math.sin(walkCycle)*0.6;
     armR.rotation.x = Math.sin(walkCycle)*0.6;
+    backpack.position.y = 1.08 + Math.abs(Math.sin(walkCycle))*0.025;
+    backpackTop.position.y = 1.3 + Math.abs(Math.sin(walkCycle))*0.025;
   } else {
     legL.rotation.x *= 0.8; legR.rotation.x *= 0.8; armL.rotation.x*=0.8; armR.rotation.x*=0.8;
   }
@@ -1682,6 +2062,11 @@ function movePlayer(dt){
   if(grounded) player.position.y += (targetY - player.position.y)*Math.min(1,dt*12);
   else player.position.y = targetY;
 
+  blobShadow.position.set(player.position.x, gy+0.04, player.position.z);
+  const shadowShrink = Math.max(0.3, 1 - jumpY*0.5);
+  blobShadow.scale.set(0.7*shadowShrink, 0.7*shadowShrink, 1);
+  blobShadow.material.opacity = Math.max(0.12, 0.55 - jumpY*0.35);
+
   updateObstacleBonuses(player.position.x, player.position.z);
   // the evacuation distance is always your CURRENT straight-line distance from the volcano —
   // not distance walked — so the HUD number and the 310m goal check can never disagree
@@ -1696,6 +2081,15 @@ function movePlayer(dt){
       zipTo.set(ZIP_END.x, terrainHeight(ZIP_END.x,ZIP_END.z)+2.2, ZIP_END.z);
       grounded=false;
       showToast('ジップラインに飛び乗った！', '#ffe27a');
+      AudioSys.crackle();
+    }
+  }
+
+  if(elapsed>swingCooldownUntil){
+    const ds = Math.hypot(player.position.x-SWING_START.x, player.position.z-SWING_START.z);
+    if(ds < 2.2 && grounded){
+      swingActive = true; swingT = 0; grounded=false;
+      showToast('ロープをつかんだ！', '#7bffe0');
       AudioSys.crackle();
     }
   }
@@ -1766,22 +2160,29 @@ function animate(now){
   }
   scene.fog.density = 0.0075 + (100-visibility)/100*0.018;
   ashMat.opacity = 0.4 + (100-visibility)/100*0.5;
+  ashMat.color.setRGB(1, 1-eruptGlow*0.28, 1-eruptGlow*0.42); // warm, ember-tinted ash during eruptions
 
   if(!quizOpen) movePlayer(dt);
   updateCamera(dt);
   if(!quizOpen){
   updateBombs(dt, now);
   updateLavaBursts(dt);
+  updateAshPuffs(dt);
+  updateGeysers(dt);
   updatePumice(dt);
   }
 
   // ash particles fall + wrap around player
   const posAttr = ashGeo.attributes.position;
+  const ashSpeedMul = eruptionActive ? 1.9 : 1;
   for(let i=0;i<ashCount;i++){
-    let y = posAttr.getY(i) - ashVel[i]*dt*10;
+    let y = posAttr.getY(i) - ashVel[i]*dt*10*ashSpeedMul;
     if(y<0){ y=140; }
     posAttr.setY(i,y);
     let x=posAttr.getX(i), z=posAttr.getZ(i);
+    x += Math.sin(now*0.0007 + ashSway[i])*0.06;
+    z += Math.cos(now*0.0006 + ashSway[i])*0.06;
+    posAttr.setX(i,x); posAttr.setZ(i,z);
     const rx = x-player.position.x, rz=z-player.position.z;
     if(Math.abs(rx)>200 || Math.abs(rz)>200){
       posAttr.setX(i, player.position.x+(Math.random()-0.5)*380);
@@ -1804,10 +2205,14 @@ function animate(now){
     }
   }
   sPos.needsUpdate = true;
+  smokeMat.opacity = 0.55 + eruptGlow*0.3;
+  smokeMat.color.setRGB(1-eruptGlow*0.55, 1-eruptGlow*0.62, 1-eruptGlow*0.65);
 
   // crater flicker
   emberLight.intensity = 3.5 + Math.sin(now*0.006)*0.8 + (eruptionActive?3:0) + (volcanoPower-1)*3;
   crater.material.color.setHSL(0.05, 1, 0.5+Math.sin(now*0.01)*0.1 + (eruptionActive?0.15:0));
+  craterTex.offset.x = Math.sin(now*0.00018)*0.06 + now*0.00002*(eruptionActive?3:1);
+  craterTex.offset.y = Math.cos(now*0.00021)*0.06;
 
   // sky/fog darken and redden during an eruption for atmosphere, settle back after
   eruptGlow = eruptionActive ? Math.min(1, eruptGlow+dt*0.7) : Math.max(0, eruptGlow-dt*0.2);
@@ -1841,6 +2246,8 @@ function resetGame(){
   bombs.forEach(b=>scene.remove(b.mesh)); bombs=[];
   pumice.forEach(p=>scene.remove(p.mesh)); pumice=[];
   lavaBursts.forEach(l=>{ if(l.mesh) scene.remove(l.mesh); }); lavaBursts=[];
+  ashPuffs.forEach(p=>scene.remove(p.sprite)); ashPuffs=[];
+  GEYSERS.forEach(g=>{ g._hitThisBurst=false; });
   fissures.forEach(f=>{ if(f.ring) scene.remove(f.ring); if(f.flame) scene.remove(f.flame); }); fissures=[];
   orbs.forEach(o=>scene.remove(o.mesh)); orbs=[];
   if(shockwave){ scene.remove(shockwave.mesh); scene.remove(shockwave.cloudMesh); shockwave=null; }
@@ -1850,6 +2257,7 @@ function resetGame(){
   OBSTACLE_ZONES.forEach(ob=>{ ob.cleared=false; ob.reached=false; });
   LOG_OBSTACLES.forEach(l=>{ l.cleared=false; });
   ziplineActive=false; ziplineT=0; zipUsedThisRun=false;
+  swingActive=false; swingT=0; swingCooldownUntil=0; player.rotation.z=0;
   document.getElementById('quizModal').classList.remove('show');
   document.getElementById('studyPrompt').classList.remove('show');
   jumpY=0; jumpVel=0; grounded=true;
@@ -1860,17 +2268,19 @@ function resetGame(){
   document.getElementById('gameOver').classList.remove('show');
 }
 
-document.getElementById('startBtn').addEventListener('click', ()=>{
+document.getElementById('startBtn').addEventListener('click', (e)=>{
   document.getElementById('veil').classList.add('hide');
   hud.classList.add('show');
   AudioSys.startAmbient();
   resetGame();
   started = true;
+  e.target.blur();
 });
-document.getElementById('retryBtn').addEventListener('click', ()=>{
+document.getElementById('retryBtn').addEventListener('click', (e)=>{
   document.getElementById('gameOver').classList.remove('show');
   resetGame();
   started = true;
+  e.target.blur();
 });
 document.getElementById('muteBtn').addEventListener('click', (e)=>{
   const m = AudioSys.toggleMute();
