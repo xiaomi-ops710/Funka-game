@@ -98,17 +98,39 @@ const AudioSys = (()=>{
     crackG.gain.setValueAtTime(big?0.55:0.3, now);
     crackG.gain.exponentialRampToValueAtTime(0.0001, now+0.16);
     crackSrc.connect(crackHp); crackHp.connect(crackG); crackG.connect(master); crackSrc.start();
+    // echo tail — the boom bouncing back off the mountainside, fading over a couple seconds
+    const delay = ctx.createDelay(2.5); delay.delayTime.value = 0.38;
+    const delayLp = ctx.createBiquadFilter(); delayLp.type='lowpass'; delayLp.frequency.value=450;
+    const feedback = ctx.createGain(); feedback.gain.value = big?0.38:0.22;
+    g.connect(delay); delay.connect(delayLp); delayLp.connect(feedback); feedback.connect(delay); delayLp.connect(master);
+  }
+  function footstep(hard){
+    ensure();
+    const now=ctx.currentTime;
+    const src=ctx.createBufferSource(); src.buffer=noiseBuffer(0.09,'brown');
+    const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value= hard?900:650;
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(hard?0.11:0.07, now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+0.08);
+    src.connect(lp); lp.connect(g); g.connect(master); src.start();
   }
   function siren(){
     ensure();
     const now=ctx.currentTime;
     const osc = ctx.createOscillator(); osc.type='sawtooth';
-    const g = ctx.createGain(); g.gain.value=0.09;
+    const g = ctx.createGain(); g.gain.value=0.0001;
     osc.connect(g); g.connect(master);
-    osc.frequency.setValueAtTime(500, now);
-    osc.frequency.linearRampToValueAtTime(900, now+0.5);
-    osc.frequency.linearRampToValueAtTime(500, now+1.0);
-    osc.start(now); osc.stop(now+1.05);
+    g.gain.exponentialRampToValueAtTime(0.11, now+0.15);
+    osc.frequency.setValueAtTime(420, now);
+    osc.frequency.linearRampToValueAtTime(880, now+0.9);
+    osc.frequency.linearRampToValueAtTime(420, now+1.8);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+1.85);
+    osc.start(now); osc.stop(now+1.9);
+    // mechanical "motor" texture underneath the tone, like a real hand-crank/electric siren
+    const noise = ctx.createBufferSource(); noise.buffer = noiseBuffer(1.9,'white');
+    const bp = ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=650; bp.Q.value=3;
+    const ng = ctx.createGain(); ng.gain.value=0.02;
+    noise.connect(bp); bp.connect(ng); ng.connect(master); noise.start();
   }
   function hit(){
     ensure();
@@ -128,11 +150,18 @@ const AudioSys = (()=>{
   }
   function crackle(){
     ensure();
-    const src = ctx.createBufferSource(); src.buffer=noiseBuffer(0.4,'white');
-    const hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=2000;
-    const g=ctx.createGain(); const now=ctx.currentTime;
-    g.gain.setValueAtTime(0.15,now); g.gain.exponentialRampToValueAtTime(0.0001,now+0.35);
-    src.connect(hp); hp.connect(g); g.connect(master); src.start();
+    const now=ctx.currentTime;
+    const pops = 3+Math.floor(Math.random()*3);
+    for(let i=0;i<pops;i++){
+      const t = now + Math.random()*0.28;
+      const src = ctx.createBufferSource(); src.buffer=noiseBuffer(0.05+Math.random()*0.06,'white');
+      const hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=1800+Math.random()*2200;
+      const g=ctx.createGain();
+      g.gain.setValueAtTime(0.0001,t);
+      g.gain.exponentialRampToValueAtTime(0.05+Math.random()*0.11, t+0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, t+0.05+Math.random()*0.09);
+      src.connect(hp); hp.connect(g); g.connect(master); src.start(t);
+    }
   }
   function chime(){
     ensure();
@@ -156,7 +185,7 @@ const AudioSys = (()=>{
     src.connect(hp); hp.connect(g); g.connect(master); src.start();
   }
   function toggleMute(){ ensure(); muted=!muted; master.gain.setTargetAtTime(muted?0:0.85, ctx.currentTime,0.1); return muted; }
-  return { startAmbient, setIntensity, boom, siren, hit, crackle, chime, fissureBurst, toggleMute };
+  return { startAmbient, setIntensity, boom, siren, hit, crackle, chime, fissureBurst, footstep, toggleMute };
 })();
 
 /* ============================== THREE SETUP ============================== */
@@ -1901,6 +1930,7 @@ function endEruption(){
 /* ============================== MAIN LOOP ============================== */
 let lastTime = performance.now();
 let walkCycle=0;
+let lastFootStep=0;
 
 function currentScore(){
   return Math.round(Math.max(0,distTraveled-START_DIST)*4) + score + (over ? 0 : 0);
@@ -2030,6 +2060,13 @@ function movePlayer(dt){
     armR.rotation.x = Math.sin(walkCycle)*0.6;
     backpack.position.y = 1.08 + Math.abs(Math.sin(walkCycle))*0.025;
     backpackTop.position.y = 1.3 + Math.abs(Math.sin(walkCycle))*0.025;
+    if(grounded){
+      const stepPhase = Math.floor(walkCycle/Math.PI);
+      if(stepPhase !== lastFootStep){
+        lastFootStep = stepPhase;
+        AudioSys.footstep(sprinting);
+      }
+    }
   } else {
     legL.rotation.x *= 0.8; legR.rotation.x *= 0.8; armL.rotation.x*=0.8; armR.rotation.x*=0.8;
   }
@@ -2258,6 +2295,7 @@ function resetGame(){
   LOG_OBSTACLES.forEach(l=>{ l.cleared=false; });
   ziplineActive=false; ziplineT=0; zipUsedThisRun=false;
   swingActive=false; swingT=0; swingCooldownUntil=0; player.rotation.z=0;
+  lastFootStep=0;
   document.getElementById('quizModal').classList.remove('show');
   document.getElementById('studyPrompt').classList.remove('show');
   jumpY=0; jumpVel=0; grounded=true;
