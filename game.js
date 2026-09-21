@@ -184,8 +184,57 @@ const AudioSys = (()=>{
     g.gain.exponentialRampToValueAtTime(0.0001, now+0.55);
     src.connect(hp); hp.connect(g); g.connect(master); src.start();
   }
+  function land(hard){
+    ensure();
+    const now=ctx.currentTime;
+    const src=ctx.createBufferSource(); src.buffer=noiseBuffer(0.13,'brown');
+    const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=hard?420:550;
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(hard?0.2:0.13, now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+0.16);
+    src.connect(lp); lp.connect(g); g.connect(master); src.start();
+  }
+  function boing(){
+    ensure();
+    const now=ctx.currentTime;
+    const osc=ctx.createOscillator(); osc.type='sine';
+    const g=ctx.createGain(); g.gain.value=0.0001;
+    osc.connect(g); g.connect(master);
+    osc.frequency.setValueAtTime(180, now);
+    osc.frequency.exponentialRampToValueAtTime(560, now+0.18);
+    g.gain.exponentialRampToValueAtTime(0.17, now+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+0.24);
+    osc.start(now); osc.stop(now+0.26);
+  }
+  function whoosh(dur){
+    ensure();
+    const now=ctx.currentTime; const d=dur||1.0;
+    const src=ctx.createBufferSource(); src.buffer=noiseBuffer(d,'white');
+    const bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.Q.value=1.0;
+    bp.frequency.setValueAtTime(280, now);
+    bp.frequency.linearRampToValueAtTime(1300, now+d*0.5);
+    bp.frequency.linearRampToValueAtTime(280, now+d);
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.09, now+d*0.2);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+d);
+    src.connect(bp); bp.connect(g); g.connect(master); src.start();
+  }
+  function comboDing(level){
+    ensure();
+    const now=ctx.currentTime;
+    const freq = 660 + Math.min(level,6)*90;
+    const osc=ctx.createOscillator(); osc.type='triangle';
+    const g=ctx.createGain(); g.gain.value=0.0001;
+    osc.connect(g); g.connect(master);
+    osc.frequency.value=freq;
+    g.gain.exponentialRampToValueAtTime(0.13, now+0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+0.2);
+    osc.start(now); osc.stop(now+0.22);
+  }
   function toggleMute(){ ensure(); muted=!muted; master.gain.setTargetAtTime(muted?0:0.85, ctx.currentTime,0.1); return muted; }
-  return { startAmbient, setIntensity, boom, siren, hit, crackle, chime, fissureBurst, footstep, toggleMute };
+  return { startAmbient, setIntensity, boom, siren, hit, crackle, chime, fissureBurst, footstep,
+    land, boing, whoosh, comboDing, toggleMute };
 })();
 
 /* ============================== THREE SETUP ============================== */
@@ -223,7 +272,7 @@ scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffb37a, 1.05);
 sun.position.set(-60,90,-40);
 sun.castShadow = true;
-sun.shadow.mapSize.set(isLowPower?768:1536, isLowPower?768:1536);
+sun.shadow.mapSize.set(isLowPower?768:2048, isLowPower?768:2048);
 sun.shadow.camera.left=-120; sun.shadow.camera.right=120; sun.shadow.camera.top=120; sun.shadow.camera.bottom=-120;
 sun.shadow.camera.far=400;
 scene.add(sun);
@@ -270,7 +319,7 @@ let skyMat = null;
   scene.add(glow);
 
   // low distant hill silhouettes ringing the horizon, for a sense of scale
-  const segs = isLowPower?28:40, radius=560;
+  const segs = isLowPower?28:40, radius=640;
   const positions=[], colors=[];
   const hillCol = new THREE.Color(0x1c140e);
   for(let i=0;i<segs;i++){
@@ -290,7 +339,7 @@ let skyMat = null;
 })();
 
 /* ---------- Ground (procedural, sloping away from volcano) ---------- */
-const GROUND_SIZE = 900, GROUND_SEG = isLowPower?90:130;
+const GROUND_SIZE = 1100, GROUND_SEG = isLowPower?90:150;
 const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, GROUND_SEG, GROUND_SEG);
 groundGeo.rotateX(-Math.PI/2);
 /* ---------- Athletic obstacle zones (ravine crossings with a plank bridge, boulder stairways) ----------
@@ -307,23 +356,39 @@ const OBSTACLE_ZONES = [
   {type:'ravine', cx:150, cz:130, angle:1.3,  rx:9,  rz:5.5, depth:5.5, bridgeWidth:0.9, beam:true, cleared:false},
   {type:'stones', cx:100, cz:230, angle:-0.4, rx:15, rz:7.0, depth:5.0, cleared:false,
     stones:[{u:-11,v:0.3,r:2.2},{u:-3,v:-2.0,r:2.1},{u:5,v:2.0,r:2.2},{u:13,v:-0.4,r:2.1}]},
+  // --- further out, well past the near-volcano cluster, so the whole route to the 310m goal has athletics ---
+  {type:'ravine', cx:190, cz:300, angle:0.4,  rx:11, rz:6.5, depth:6.0, bridgeWidth:2.0, cleared:false},
+  {type:'ravine', cx:-160,cz:320, angle:-0.7, rx:10, rz:6.0, depth:6.0, bridgeWidth:1.0, beam:true, cleared:false},
+  {type:'stones', cx:50,  cz:350, angle:0.9,  rx:16, rz:7.0, depth:5.5, cleared:false,
+    stones:[{u:-12,v:0.4,r:2.3},{u:-4,v:-2.1,r:2.1},{u:4,v:2.1,r:2.2},{u:12,v:-0.5,r:2.1}]},
+  {type:'stairs', cx:-180,cz:260, angle:0.5,  rx:16, rz:9.0, height:7.0, reached:false, stairs2:true},
 ];
 function zoneLocal(x,z,ob){
   const dx=x-ob.cx, dz=z-ob.cz, ca=Math.cos(ob.angle), sa=Math.sin(ob.angle);
   return { u: dx*ca+dz*sa, v: -dx*sa+dz*ca };
 }
 
-// zipline running from the stairway lookout down to a point further along the escape route —
-// a one-time reward for climbing up, and a fast, fun way to cover ground
+// ziplines running from each stairway lookout down to a point further along the escape route —
+// a one-time reward per zipline for climbing up, and a fast, fun way to cover ground
+function zipEndpointsFor(stairsOb, dist, side){
+  const start = {
+    x: stairsOb.cx + Math.cos(stairsOb.angle)*stairsOb.rx*0.92,
+    z: stairsOb.cz + Math.sin(stairsOb.angle)*stairsOb.rx*0.92,
+  };
+  const end = {
+    x: start.x + Math.cos(stairsOb.angle)*dist + Math.sin(stairsOb.angle)*side,
+    z: start.z + Math.sin(stairsOb.angle)*dist - Math.cos(stairsOb.angle)*side,
+  };
+  return {start, end};
+}
 const stairsZone = OBSTACLE_ZONES.find(o=>o.type==='stairs');
-const ZIP_START = {
-  x: stairsZone.cx + Math.cos(stairsZone.angle)*stairsZone.rx*0.92,
-  z: stairsZone.cz + Math.sin(stairsZone.angle)*stairsZone.rx*0.92,
-};
-const ZIP_END = {
-  x: ZIP_START.x + Math.cos(stairsZone.angle)*68 + Math.sin(stairsZone.angle)*18,
-  z: ZIP_START.z + Math.sin(stairsZone.angle)*68 - Math.cos(stairsZone.angle)*18,
-};
+const stairsZone2 = OBSTACLE_ZONES.find(o=>o.stairs2);
+const zip1 = zipEndpointsFor(stairsZone, 68, 18);
+const zip2 = zipEndpointsFor(stairsZone2, 62, -20);
+const ZIPLINES = [
+  {start:zip1.start, end:zip1.end, used:false},
+  {start:zip2.start, end:zip2.end, used:false},
+];
 
 // rope swing — an alternative, faster way across the first ravine: grab it near one lip and
 // swing straight over to the other, instead of using the plank bridge
@@ -405,7 +470,95 @@ function pitShade(x,z){
   groundGeo.setAttribute('color', new THREE.BufferAttribute(colors,3));
   groundGeo.computeVertexNormals();
 }
-const groundMat = new THREE.MeshStandardMaterial({ color:0xffffff, vertexColors:true, roughness:1, metalness:0, flatShading:true });
+
+/* ---------- Fine terrain patches over each obstacle zone ----------
+   The main ground mesh is coarse (for performance), so sharp local features — a ravine's dip,
+   a stairway's steps, a stepping-stone's flat top — can fall between its grid vertices and be
+   missed or smoothed away, making the player appear to sink into or float above the visible
+   surface right where it matters most. Each zone gets its own finely-tessellated patch, built
+   from the exact same terrainHeight() the player's feet use, so what you see always matches
+   where you stand. */
+function buildTerrainPatch(ob, marginU, marginV, resU, resV){
+  const ca=Math.cos(ob.angle), sa=Math.sin(ob.angle);
+  const halfU = ob.rx*marginU, halfV = ob.rz*marginV;
+  const positions=[], colors=[], indices=[];
+  const ashCol = new THREE.Color(0x342d26), dirtCol = new THREE.Color(0x4a3625), scrubCol = new THREE.Color(0x51462a);
+  for(let j=0;j<=resV;j++){
+    const v = -halfV + (j/resV)*halfV*2;
+    for(let i=0;i<=resU;i++){
+      const u = -halfU + (i/resU)*halfU*2;
+      const x = ob.cx + u*ca - v*sa;
+      const z = ob.cz + u*sa + v*ca;
+      const y = terrainHeight(x,z) + 0.025;
+      positions.push(x,y,z);
+      const d = Math.hypot(x,z);
+      const t = Math.min(1, d/260);
+      const col = t<0.35 ? ashCol.clone().lerp(dirtCol, t/0.35) : dirtCol.clone().lerp(scrubCol, (t-0.35)/0.65);
+      const shade = (0.82+Math.random()*0.36) * pitShade(x,z);
+      colors.push(col.r*shade, col.g*shade, col.b*shade);
+    }
+  }
+  const rowLen = resU+1;
+  for(let j=0;j<resV;j++){
+    for(let i=0;i<resU;i++){
+      const a=j*rowLen+i, b=a+1, c=a+rowLen, d=c+1;
+      indices.push(a,c,b, b,c,d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:1, flatShading:true});
+  const patch = new THREE.Mesh(geo, mat);
+  patch.receiveShadow = true;
+  scene.add(patch);
+}
+OBSTACLE_ZONES.forEach(ob=>{
+  if(ob.type==='ravine') buildTerrainPatch(ob, 1.35, 1.6, isLowPower?16:24, isLowPower?10:16);
+  else if(ob.type==='stones') buildTerrainPatch(ob, 1.35, 1.6, isLowPower?18:26, isLowPower?10:16);
+  else if(ob.type==='stairs') buildTerrainPatch(ob, 1.15, 1.15, isLowPower?18:26, isLowPower?12:18);
+});
+
+/* Procedural tangent-space normal map from layered sine noise — adds fine surface bump/grain
+   to the lighting without adding a single extra triangle. Cheap: one-time per-pixel loop. */
+function buildNoiseNormalMap(size, freq){
+  const heights = new Float32Array(size*size);
+  const f = freq||6;
+  for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+      const u=(x/size)*Math.PI*2*f, v=(y/size)*Math.PI*2*f;
+      let h = Math.sin(u*1.7+Math.cos(v*1.3))*0.5 + Math.sin(u*3.3-v*2.1)*0.3 + Math.sin(u*7.1+v*5.4)*0.15;
+      h += (Math.random()-0.5)*0.18;
+      heights[y*size+x]=h;
+    }
+  }
+  const c=document.createElement('canvas'); c.width=c.height=size;
+  const ctx2=c.getContext('2d');
+  const img = ctx2.createImageData(size,size);
+  const strength=1.7;
+  for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+      const xm=(x-1+size)%size, xp=(x+1)%size, ym=(y-1+size)%size, yp=(y+1)%size;
+      const hl=heights[y*size+xm], hr=heights[y*size+xp], hu=heights[ym*size+x], hd=heights[yp*size+x];
+      let nx=(hl-hr)*strength, ny=(hu-hd)*strength, nz=1.0;
+      const len=Math.sqrt(nx*nx+ny*ny+nz*nz); nx/=len; ny/=len; nz/=len;
+      const idx=(y*size+x)*4;
+      img.data[idx]=(nx*0.5+0.5)*255; img.data[idx+1]=(ny*0.5+0.5)*255; img.data[idx+2]=(nz*0.5+0.5)*255; img.data[idx+3]=255;
+    }
+  }
+  ctx2.putImageData(img,0,0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS=THREE.RepeatWrapping; tex.wrapT=THREE.RepeatWrapping;
+  return tex;
+}
+const groundNormalMap = buildNoiseNormalMap(isLowPower?64:128, 5);
+groundNormalMap.repeat.set(46,46);
+const groundRoughMap = buildNoiseNormalMap(isLowPower?48:96, 9); // reused as a grayscale-ish roughness variation source
+groundRoughMap.repeat.set(46,46);
+const groundMat = new THREE.MeshStandardMaterial({ color:0xffffff, vertexColors:true, roughness:1, metalness:0, flatShading:true,
+  normalMap:groundNormalMap, normalScale:new THREE.Vector2(0.55,0.55), roughnessMap:groundRoughMap });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.receiveShadow = true;
 scene.add(ground);
@@ -481,32 +634,32 @@ OBSTACLE_ZONES.forEach(ob=>{
 });
 
 /* ---------- Zipline from the stairway lookout ---------- */
-function buildZipline(){
+function buildZipline(ZS, ZE){
   const postMat = new THREE.MeshStandardMaterial({color:0x5a4530, roughness:0.9});
   const cableMat = new THREE.MeshStandardMaterial({color:0x2a2622, roughness:0.6, metalness:0.4});
-  const y0 = terrainHeight(ZIP_START.x, ZIP_START.z)+3.4;
-  const y1 = terrainHeight(ZIP_END.x, ZIP_END.z)+1.9;
-  const postA = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.11,y0-terrainHeight(ZIP_START.x,ZIP_START.z)+0.3,6), postMat);
-  postA.position.set(ZIP_START.x, terrainHeight(ZIP_START.x,ZIP_START.z)+(y0-terrainHeight(ZIP_START.x,ZIP_START.z))/2, ZIP_START.z);
+  const y0 = terrainHeight(ZS.x, ZS.z)+3.4;
+  const y1 = terrainHeight(ZE.x, ZE.z)+1.9;
+  const postA = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.11,y0-terrainHeight(ZS.x,ZS.z)+0.3,6), postMat);
+  postA.position.set(ZS.x, terrainHeight(ZS.x,ZS.z)+(y0-terrainHeight(ZS.x,ZS.z))/2, ZS.z);
   scene.add(postA);
-  const postB = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.11,y1-terrainHeight(ZIP_END.x,ZIP_END.z)+0.3,6), postMat);
-  postB.position.set(ZIP_END.x, terrainHeight(ZIP_END.x,ZIP_END.z)+(y1-terrainHeight(ZIP_END.x,ZIP_END.z))/2, ZIP_END.z);
+  const postB = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.11,y1-terrainHeight(ZE.x,ZE.z)+0.3,6), postMat);
+  postB.position.set(ZE.x, terrainHeight(ZE.x,ZE.z)+(y1-terrainHeight(ZE.x,ZE.z))/2, ZE.z);
   scene.add(postB);
   const curve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(ZIP_START.x,y0,ZIP_START.z),
-    new THREE.Vector3((ZIP_START.x+ZIP_END.x)/2, (y0+y1)/2+0.6, (ZIP_START.z+ZIP_END.z)/2),
-    new THREE.Vector3(ZIP_END.x,y1,ZIP_END.z),
+    new THREE.Vector3(ZS.x,y0,ZS.z),
+    new THREE.Vector3((ZS.x+ZE.x)/2, (y0+y1)/2+0.6, (ZS.z+ZE.z)/2),
+    new THREE.Vector3(ZE.x,y1,ZE.z),
   ]);
   const cable = new THREE.Mesh(new THREE.TubeGeometry(curve, 20, 0.045, 5, false), cableMat);
   scene.add(cable);
   // a little signboard at the anchor so it reads as a usable zipline, not just scenery
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.0,0.5),
     new THREE.MeshStandardMaterial({color:0xffb347, side:THREE.DoubleSide, roughness:0.7}));
-  sign.position.set(ZIP_START.x-0.6, y0-1.0, ZIP_START.z);
-  sign.rotation.y = Math.atan2(ZIP_END.x-ZIP_START.x, ZIP_END.z-ZIP_START.z)+Math.PI/2;
+  sign.position.set(ZS.x-0.6, y0-1.0, ZS.z);
+  sign.rotation.y = Math.atan2(ZE.x-ZS.x, ZE.z-ZS.z)+Math.PI/2;
   scene.add(sign);
 }
-buildZipline();
+ZIPLINES.forEach(z=>buildZipline(z.start,z.end));
 
 /* ---------- Rope swing over the first ravine — a fast alternative to the plank bridge ---------- */
 function buildRopeSwing(){
@@ -549,6 +702,9 @@ const LOG_OBSTACLES = [
   {x:-95, z:150, angle:-0.5, length:8, radius:0.75, cleared:false},
   {x:60,  z:240, angle:0.6,  length:7.5, radius:0.7, cleared:false},
   {x:-110,z:180, angle:-0.2, length:8, radius:0.75, cleared:false},
+  {x:210, z:260, angle:0.5,  length:8, radius:0.75, cleared:false},
+  {x:-140,z:290, angle:-0.4, length:7.5, radius:0.7, cleared:false},
+  {x:20,  z:390, angle:0.2,  length:8, radius:0.75, cleared:false},
 ];
 const logMat = new THREE.MeshStandardMaterial({color:0x4a3320, roughness:0.95, flatShading:true});
 const logCapMat = new THREE.MeshStandardMaterial({color:0x8a6a42, roughness:0.9, flatShading:true});
@@ -598,6 +754,8 @@ function resolveLogCollision(px,pz,curJumpY){
 const BOUNCE_PADS = [
   {x:-10, z:210, r:2.1, power:11.5},
   {x:130, z:165, r:2.1, power:11.5},
+  {x:230, z:210, r:2.1, power:12},
+  {x:-150,z:350, r:2.1, power:12},
 ];
 const bouncePadMat = new THREE.MeshStandardMaterial({color:0x2fd1a6, emissive:0x0e5c46, emissiveIntensity:0.8, roughness:0.4, metalness:0.3});
 const bounceCoilMat = new THREE.MeshStandardMaterial({color:0x8fa8a0, roughness:0.5, metalness:0.6});
@@ -628,6 +786,8 @@ const GEYSERS = [
   {x:40,  z:150, cycle:7.5, offset:0,   radius:3.0},
   {x:-70, z:220, cycle:8.5, offset:3.5, radius:3.0},
   {x:120, z:145, cycle:7.0, offset:5.2, radius:2.8},
+  {x:190, z:340, cycle:7.5, offset:1.5, radius:3.0},
+  {x:-110,z:360, cycle:8.0, offset:4.2, radius:2.8},
 ];
 const geyserSteamTex = (()=>{
   const c=document.createElement('canvas'); c.width=c.height=64;
@@ -704,7 +864,7 @@ scene.add(rockMesh);
 
 /* ---------- Volcano "大網" ---------- */
 const volcano = new THREE.Group();
-const coneGeo = new THREE.ConeGeometry(60, 100, isLowPower?44:56, isLowPower?7:9, true);
+const coneGeo = new THREE.ConeGeometry(60, 100, isLowPower?44:64, isLowPower?7:10, true);
 const conePos = coneGeo.attributes.position;
 // world-Y that raw local y=0 corresponds to, once the cone is shifted +50 and the volcano
 // group is placed — needed so the sculpted base can be welded exactly onto the ground mesh below
@@ -787,9 +947,12 @@ const rockTex = (()=>{
   tex.wrapS=THREE.RepeatWrapping; tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(4,3);
   return tex;
 })();
-const coneMat = new THREE.MeshStandardMaterial({color:0xffffff, vertexColors:true, map:rockTex, roughness:0.97, flatShading:true});
+const coneNormalMap = buildNoiseNormalMap(isLowPower?64:128, 10);
+coneNormalMap.repeat.set(8,6);
+const coneMat = new THREE.MeshStandardMaterial({color:0xffffff, vertexColors:true, map:rockTex, roughness:0.97, flatShading:true,
+  normalMap:coneNormalMap, normalScale:new THREE.Vector2(0.9,0.9)});
 const cone = new THREE.Mesh(coneGeo, coneMat);
-rockMat.map = rockTex; rockMat.needsUpdate = true; // scattered field rocks share the volcano's rock texture
+rockMat.map = rockTex; rockMat.normalMap = coneNormalMap; rockMat.normalScale = new THREE.Vector2(0.8,0.8); rockMat.needsUpdate = true; // scattered field rocks share the volcano's rock texture
 cone.position.y = 50;
 cone.castShadow = true; cone.receiveShadow = true;
 volcano.add(cone);
@@ -993,9 +1156,10 @@ function buildLavaFlow(angle, widthTop, widthBot, wobble){
     posAttr.setY(i, vy*0.35+cx.y*0.65);
   }
   geo.computeVertexNormals();
+  const lavaNormalMap = coneNormalMap.clone(); lavaNormalMap.needsUpdate = true; lavaNormalMap.repeat.set(1,4);
   const mat = new THREE.MeshStandardMaterial({
     map: lavaFlowTex, emissive:0xff5a1f, emissiveMap:lavaFlowTex, emissiveIntensity:2.6,
-    roughness:0.85, metalness:0
+    roughness:0.85, metalness:0, normalMap:lavaNormalMap, normalScale:new THREE.Vector2(0.5,0.5)
   });
   mat.map.repeat.set(1,4); mat.emissiveMap.repeat.set(1,4);
   const mesh = new THREE.Mesh(geo, mat);
@@ -1041,7 +1205,7 @@ buildLavaPool(3.2, 3.8, 5.8);
    hugs the true curve and hides that seam completely. ---------- */
 (function buildVolcanoSkirt(){
   const innerR = 50, outerR = 112, rings = 9, segs = isLowPower?40:56;
-  const positions=[], colors=[], indices=[];
+  const positions=[], colors=[], indices=[], uvs=[];
   const innerY = volcano.position.y + 1.0;
   const rockCol = new THREE.Color(0x6b6156), dirtCol = new THREE.Color(0x4a3625);
   for(let ring=0; ring<=rings; ring++){
@@ -1056,6 +1220,7 @@ buildLavaPool(3.2, 3.8, 5.8);
       const col = rockCol.clone().lerp(dirtCol, rt);
       const v = 0.85+Math.random()*0.3;
       colors.push(col.r*v, col.g*v, col.b*v);
+      uvs.push((i/segs)*8, rt*3);
     }
   }
   const rowLen = segs+1;
@@ -1069,8 +1234,13 @@ buildLavaPool(3.2, 3.8, 5.8);
   geo.setIndex(indices);
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs,2));
   geo.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({vertexColors:true, map:rockTex, roughness:1, flatShading:true});
+  const skirtNormalMap = coneNormalMap.clone(); skirtNormalMap.needsUpdate = true; skirtNormalMap.repeat.set(2,1);
+  const skirtRoughMap = groundRoughMap.clone(); skirtRoughMap.needsUpdate = true; skirtRoughMap.repeat.set(2,1);
+  const mat = new THREE.MeshStandardMaterial({vertexColors:true, map:rockTex, roughness:1, flatShading:true,
+    normalMap:skirtNormalMap, normalScale:new THREE.Vector2(0.7,0.7), roughnessMap:skirtRoughMap});
+  mat.map = mat.map.clone(); mat.map.needsUpdate = true; mat.map.repeat.set(2,1);
   const skirt = new THREE.Mesh(geo, mat);
   skirt.receiveShadow = true;
   scene.add(skirt);
@@ -1215,10 +1385,55 @@ blobShadow.rotation.x = -Math.PI/2;
 blobShadow.renderOrder = 1;
 scene.add(blobShadow);
 
+/* ---------- Rescue the classmates — small NPC figures scattered along the route.
+   Touching one is an optional bonus, and ties the evacuation theme together. ---------- */
+const NPCS = [
+  {x:10,   z:195, color:0x3a7bd5, rescued:false},
+  {x:-55,  z:255, color:0xd5a83a, rescued:false},
+  {x:160,  z:235, color:0x8a3ad5, rescued:false},
+  {x:-110, z:335, color:0x3ad58a, rescued:false},
+  {x:200,  z:320, color:0xd5573a, rescued:false},
+];
+const npcLegMat = new THREE.MeshStandardMaterial({color:0x2b2f3a, roughness:0.85});
+function buildNPC(n){
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({color:n.color, roughness:0.75});
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.24,0.26,0.55,8), mat);
+  torso.position.y=0.85; torso.castShadow=true; g.add(torso);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.2,10,8), skinMat);
+  head.position.y=1.32; head.castShadow=true; g.add(head);
+  const legGeoN = new THREE.CylinderGeometry(0.09,0.09,0.5,6);
+  const legL2=new THREE.Mesh(legGeoN, npcLegMat); legL2.position.set(-0.11,0.4,0); legL2.castShadow=true; g.add(legL2);
+  const legR2=new THREE.Mesh(legGeoN, npcLegMat); legR2.position.set(0.11,0.4,0); legR2.castShadow=true; g.add(legR2);
+  const flag = new THREE.Mesh(new THREE.ConeGeometry(0.12,0.3,6), mat);
+  flag.position.y=1.7; g.add(flag); // small beacon so NPCs read as "find me" markers from a distance
+  g.position.set(n.x, terrainHeight(n.x,n.z), n.z);
+  scene.add(g);
+  n.mesh = g;
+}
+NPCS.forEach(buildNPC);
+let rescueCount=0;
+function updateNPCs(dt, now){
+  for(const n of NPCS){
+    if(n.rescued) continue;
+    n.mesh.rotation.y = Math.sin(now*0.0006+n.x)*0.4;
+    n.mesh.position.y = terrainHeight(n.x,n.z) + Math.sin(now*0.004+n.x)*0.04;
+    const dist = Math.hypot(player.position.x-n.x, player.position.z-n.z);
+    if(dist < 1.7){
+      n.rescued = true;
+      rescueCount++;
+      score += 120;
+      scene.remove(n.mesh);
+      showToast('同級生を助けた！ +120', '#7bffa0');
+      AudioSys.chime();
+    }
+  }
+}
+
 
 
 const START_DIST = 130;
-const GOAL_DIST = 310;
+const GOAL_DIST = START_DIST + 310; // displayed distance starts at 0m and the goal reads 310m
 player.position.set(0, 0, START_DIST);
 scene.add(player);
 
@@ -1327,11 +1542,13 @@ let jumpPressedLast=false;
 let volcanoPower=1;
 let quizOpen=false, studyCooldownUntil=0;
 let boulders=[], nextBoulderAt=18;
-let ziplineActive=false, ziplineT=0, zipUsedThisRun=false;
+let ziplineActive=false, ziplineT=0;
 const zipFrom=new THREE.Vector3(), zipTo=new THREE.Vector3();
 const ZIP_DURATION=1.6;
 let swingActive=false, swingT=0, swingCooldownUntil=0;
 const SWING_DURATION=1.1, SWING_ARC_HEIGHT=3.2;
+let gustActive=false, gustT=0, nextGustAt=14+Math.random()*8, gustDirX=0, gustDirZ=0, gustStrength=0;
+const GUST_DURATION=1.4;
 let eruptGlow=0;
 
 // difficulty ramps up with progress toward the goal, then eases off right at the safe zone
@@ -1894,15 +2111,18 @@ function damagePlayer(amount){
   if(health<=0) endGame(false);
 }
 
-let lastNearMissAt = -99;
+let comboCount=0, lastNearMissAt=-99;
 function registerNearMiss(points){
   if(over) return;
-  score += points;
-  nearMissCount++;
-  const chained = (elapsed - lastNearMissAt) < 3.5;
+  const chained = (elapsed - lastNearMissAt) < 4.0;
+  comboCount = chained ? comboCount+1 : 1;
   lastNearMissAt = elapsed;
-  showCombo(chained ? `ニアミス連続！ +${points}` : `ニアミス！ +${points}`);
-  AudioSys.crackle();
+  const mult = Math.min(3, 1 + (comboCount-1)*0.25);
+  const awarded = Math.round(points*mult);
+  score += awarded;
+  nearMissCount++;
+  showCombo(comboCount>1 ? `COMBO x${comboCount}！ +${awarded}` : `ニアミス！ +${awarded}`);
+  if(comboCount>1) AudioSys.comboDing(comboCount); else AudioSys.crackle();
 }
 
 /* ============================== ERUPTION LOGIC ============================== */
@@ -1958,7 +2178,7 @@ function endGame(win){
   const goScoreEl = document.getElementById('goScore');
   if(goScoreEl) goScoreEl.textContent = finalScore;
   const goStatsEl = document.getElementById('goStats');
-  if(goStatsEl) goStatsEl.textContent = `ニアミス ${nearMissCount}回 ／ 大噴火を${eruptionsSurvived}回耐えた ／ 出題正解${quizCorrectCount}問`;
+  if(goStatsEl) goStatsEl.textContent = `ニアミス ${nearMissCount}回 ／ 大噴火を${eruptionsSurvived}回耐えた ／ 出題正解${quizCorrectCount}問 ／ 同級生${rescueCount}人救助`;
   document.getElementById('gameOver').classList.add('show');
 }
 
@@ -2070,6 +2290,29 @@ function movePlayer(dt){
   } else {
     legL.rotation.x *= 0.8; legR.rotation.x *= 0.8; armL.rotation.x*=0.8; armR.rotation.x*=0.8;
   }
+  // ash-storm wind gusts — periodic, telegraphed lateral pushes that make running (and
+  // especially the narrow bridges/beams) a little unpredictable
+  if(!gustActive){
+    if(elapsed>=nextGustAt && !ziplineActive && !swingActive){
+      gustActive=true; gustT=0;
+      const ang=Math.random()*Math.PI*2;
+      gustDirX=Math.sin(ang); gustDirZ=Math.cos(ang);
+      gustStrength=5+Math.random()*4;
+      showToast('突風注意！', '#dfe8ea');
+      AudioSys.whoosh(GUST_DURATION);
+    }
+  } else {
+    gustT += dt;
+    const envelope = Math.sin(Math.min(1,gustT/GUST_DURATION)*Math.PI);
+    player.position.x += gustDirX*gustStrength*envelope*dt;
+    player.position.z += gustDirZ*gustStrength*envelope*dt;
+    shakeAmt = Math.max(shakeAmt, envelope*0.18);
+    if(gustT>=GUST_DURATION){
+      gustActive=false;
+      nextGustAt = elapsed + 9+Math.random()*8;
+    }
+  }
+
   // clamp to ground bounds & keep off crater
   const maxR = GROUND_SIZE*0.46;
   const distFromCenter = Math.hypot(player.position.x, player.position.z);
@@ -2087,17 +2330,28 @@ function movePlayer(dt){
     jumpVel = bouncePad.power; grounded=false;
     shakeAmt = Math.max(shakeAmt, 0.25);
     showToast('スプリング発射！', '#7bffe0');
+    AudioSys.boing();
   }
   if(!grounded){
     jumpVel -= 18*dt;
     jumpY += jumpVel*dt;
-    if(jumpY<=0){ jumpY=0; jumpVel=0; grounded=true; }
+    if(jumpY<=0){
+      jumpY=0;
+      const hardLanding = jumpVel < -7;
+      jumpVel=0; grounded=true;
+      AudioSys.land(hardLanding);
+    }
   }
 
   const gy = terrainHeight(player.position.x, player.position.z);
   const targetY = gy + jumpY;
-  if(grounded) player.position.y += (targetY - player.position.y)*Math.min(1,dt*12);
-  else player.position.y = targetY;
+  if(grounded){
+    // snap fast enough that stepping onto a stone/stair/bridge never looks like sinking into it,
+    // but still smooth out tiny per-vertex noise on flat ground
+    const heightGap = Math.abs(targetY - player.position.y);
+    const followSpeed = heightGap>0.35 ? 26 : 14;
+    player.position.y += (targetY - player.position.y)*Math.min(1,dt*followSpeed);
+  } else player.position.y = targetY;
 
   blobShadow.position.set(player.position.x, gy+0.04, player.position.z);
   const shadowShrink = Math.max(0.3, 1 - jumpY*0.5);
@@ -2109,16 +2363,20 @@ function movePlayer(dt){
   // not distance walked — so the HUD number and the 310m goal check can never disagree
   distTraveled = Math.hypot(player.position.x, player.position.z);
 
-  if(!zipUsedThisRun){
-    const dz = Math.hypot(player.position.x-ZIP_START.x, player.position.z-ZIP_START.z);
-    if(dz < 2.4){
-      zipUsedThisRun = true;
-      ziplineActive = true; ziplineT = 0;
-      zipFrom.set(ZIP_START.x, terrainHeight(ZIP_START.x,ZIP_START.z)+2.6, ZIP_START.z);
-      zipTo.set(ZIP_END.x, terrainHeight(ZIP_END.x,ZIP_END.z)+2.2, ZIP_END.z);
-      grounded=false;
-      showToast('ジップラインに飛び乗った！', '#ffe27a');
-      AudioSys.crackle();
+  if(!ziplineActive){
+    for(const z of ZIPLINES){
+      if(z.used) continue;
+      const dz = Math.hypot(player.position.x-z.start.x, player.position.z-z.start.z);
+      if(dz < 2.4){
+        z.used = true;
+        ziplineActive = true; ziplineT = 0;
+        zipFrom.set(z.start.x, terrainHeight(z.start.x,z.start.z)+2.6, z.start.z);
+        zipTo.set(z.end.x, terrainHeight(z.end.x,z.end.z)+2.2, z.end.z);
+        grounded=false;
+        showToast('ジップラインに飛び乗った！', '#ffe27a');
+        AudioSys.whoosh(ZIP_DURATION);
+        break;
+      }
     }
   }
 
@@ -2127,7 +2385,7 @@ function movePlayer(dt){
     if(ds < 2.2 && grounded){
       swingActive = true; swingT = 0; grounded=false;
       showToast('ロープをつかんだ！', '#7bffe0');
-      AudioSys.crackle();
+      AudioSys.whoosh(SWING_DURATION);
     }
   }
 }
@@ -2206,6 +2464,7 @@ function animate(now){
   updateLavaBursts(dt);
   updateAshPuffs(dt);
   updateGeysers(dt);
+  updateNPCs(dt, now);
   updatePumice(dt);
   }
 
@@ -2293,8 +2552,12 @@ function resetGame(){
   quizOpen=false; studyCooldownUntil=0;
   OBSTACLE_ZONES.forEach(ob=>{ ob.cleared=false; ob.reached=false; });
   LOG_OBSTACLES.forEach(l=>{ l.cleared=false; });
-  ziplineActive=false; ziplineT=0; zipUsedThisRun=false;
+  ziplineActive=false; ziplineT=0; ZIPLINES.forEach(z=>{ z.used=false; });
   swingActive=false; swingT=0; swingCooldownUntil=0; player.rotation.z=0;
+  gustActive=false; gustT=0; nextGustAt=14+Math.random()*8;
+  comboCount=0; lastNearMissAt=-99;
+  rescueCount=0;
+  NPCS.forEach(n=>{ if(n.rescued) scene.add(n.mesh); n.rescued=false; });
   lastFootStep=0;
   document.getElementById('quizModal').classList.remove('show');
   document.getElementById('studyPrompt').classList.remove('show');
