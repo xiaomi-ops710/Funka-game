@@ -253,6 +253,7 @@ renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.15;
 holder.appendChild(renderer.domElement);
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
 
 const scene = new THREE.Scene();
 const fogColor = new THREE.Color(0x2b1b12);
@@ -261,9 +262,29 @@ scene.background = fogColor;
 
 const camera = new THREE.PerspectiveCamera(62, innerWidth/innerHeight, 0.1, 2000);
 
+/* ---------- Post-processing: bloom, for a proper glowing lava/crater/embers look.
+   Falls back cleanly to plain rendering if the postprocessing scripts didn't load. */
+let composer = null, bloomPass = null;
+const bloomSupported = !isLowPower && typeof THREE.EffectComposer==='function' && typeof THREE.UnrealBloomPass==='function';
+if(bloomSupported){
+  try{
+    composer = new THREE.EffectComposer(renderer);
+    composer.addPass(new THREE.RenderPass(scene, camera));
+    bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.7, 0.82);
+    composer.addPass(bloomPass);
+    composer.setSize(innerWidth, innerHeight);
+  } catch(e){ composer=null; bloomPass=null; }
+}
+function renderFrame(){
+  if(composer) composer.render();
+  else renderer.render(scene, camera);
+}
+
 addEventListener('resize', ()=>{
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  if(composer){ composer.setSize(innerWidth, innerHeight); }
+  if(bloomPass){ bloomPass.setSize ? bloomPass.setSize(innerWidth,innerHeight) : (bloomPass.resolution && bloomPass.resolution.set(innerWidth,innerHeight)); }
 });
 
 /* ---------- Lighting ---------- */
@@ -362,6 +383,12 @@ const OBSTACLE_ZONES = [
   {type:'stones', cx:50,  cz:350, angle:0.9,  rx:16, rz:7.0, depth:5.5, cleared:false,
     stones:[{u:-12,v:0.4,r:2.3},{u:-4,v:-2.1,r:2.1},{u:4,v:2.1,r:2.2},{u:12,v:-0.5,r:2.1}]},
   {type:'stairs', cx:-180,cz:260, angle:0.5,  rx:16, rz:9.0, height:7.0, reached:false, stairs2:true},
+  // --- final stretch toward the 310m goal ---
+  {type:'ravine', cx:60,  cz:410, angle:-0.5, rx:10, rz:6.0, depth:6.0, bridgeWidth:1.8, cleared:false},
+  {type:'ravine', cx:260, cz:250, angle:0.6,  rx:9,  rz:5.5, depth:5.5, bridgeWidth:0.9, beam:true, cleared:false},
+  {type:'stones', cx:-220,cz:200, angle:-0.3, rx:16, rz:7.0, depth:5.5, cleared:false,
+    stones:[{u:-12,v:0.3,r:2.3},{u:-4,v:-2.2,r:2.1},{u:4,v:2.2,r:2.2},{u:12,v:-0.4,r:2.1}]},
+  {type:'stairs', cx:230, cz:330, angle:-0.6, rx:15, rz:8.5, height:6.5, reached:false, stairs3:true},
 ];
 function zoneLocal(x,z,ob){
   const dx=x-ob.cx, dz=z-ob.cz, ca=Math.cos(ob.angle), sa=Math.sin(ob.angle);
@@ -383,11 +410,14 @@ function zipEndpointsFor(stairsOb, dist, side){
 }
 const stairsZone = OBSTACLE_ZONES.find(o=>o.type==='stairs');
 const stairsZone2 = OBSTACLE_ZONES.find(o=>o.stairs2);
+const stairsZone3 = OBSTACLE_ZONES.find(o=>o.stairs3);
 const zip1 = zipEndpointsFor(stairsZone, 68, 18);
 const zip2 = zipEndpointsFor(stairsZone2, 62, -20);
+const zip3 = zipEndpointsFor(stairsZone3, 64, 16);
 const ZIPLINES = [
   {start:zip1.start, end:zip1.end, used:false},
   {start:zip2.start, end:zip2.end, used:false},
+  {start:zip3.start, end:zip3.end, used:false},
 ];
 
 // rope swing — an alternative, faster way across the first ravine: grab it near one lip and
@@ -510,7 +540,7 @@ function buildTerrainPatch(ob, marginU, marginV, resU, resV){
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
   geo.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:1, flatShading:true});
+  const mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:1, flatShading:false});
   const patch = new THREE.Mesh(geo, mat);
   patch.receiveShadow = true;
   scene.add(patch);
@@ -555,9 +585,11 @@ function buildNoiseNormalMap(size, freq){
 }
 const groundNormalMap = buildNoiseNormalMap(isLowPower?64:128, 5);
 groundNormalMap.repeat.set(46,46);
+groundNormalMap.anisotropy = maxAniso;
 const groundRoughMap = buildNoiseNormalMap(isLowPower?48:96, 9); // reused as a grayscale-ish roughness variation source
 groundRoughMap.repeat.set(46,46);
-const groundMat = new THREE.MeshStandardMaterial({ color:0xffffff, vertexColors:true, roughness:1, metalness:0, flatShading:true,
+groundRoughMap.anisotropy = maxAniso;
+const groundMat = new THREE.MeshStandardMaterial({ color:0xffffff, vertexColors:true, roughness:1, metalness:0, flatShading:false,
   normalMap:groundNormalMap, normalScale:new THREE.Vector2(0.55,0.55), roughnessMap:groundRoughMap });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.receiveShadow = true;
@@ -705,6 +737,9 @@ const LOG_OBSTACLES = [
   {x:210, z:260, angle:0.5,  length:8, radius:0.75, cleared:false},
   {x:-140,z:290, angle:-0.4, length:7.5, radius:0.7, cleared:false},
   {x:20,  z:390, angle:0.2,  length:8, radius:0.75, cleared:false},
+  {x:150, z:370, angle:0.7,  length:8, radius:0.75, cleared:false},
+  {x:-250,z:230, angle:-0.3, length:7.5, radius:0.7, cleared:false},
+  {x:120, z:420, angle:-0.5, length:8, radius:0.75, cleared:false},
 ];
 const logMat = new THREE.MeshStandardMaterial({color:0x4a3320, roughness:0.95, flatShading:true});
 const logCapMat = new THREE.MeshStandardMaterial({color:0x8a6a42, roughness:0.9, flatShading:true});
@@ -750,12 +785,86 @@ function resolveLogCollision(px,pz,curJumpY){
   return {x,z};
 }
 
+/* ---------- Pendulum logs — hung from a frame, swinging steadily back and forth across the
+   path. A genuinely new kind of timing challenge: unlike the static logs, you have to read
+   the rhythm and dash through the gap instead of just timing one jump. ---------- */
+const PENDULUM_LOGS = [
+  {x:250, z:190, angle:0.3,  length:9,   radius:0.75, swingRange:4.2, period:3.4, phase:0},
+  {x:-190,z:145, angle:-0.6, length:8.5, radius:0.7,  swingRange:3.8, period:3.0, phase:1.6},
+  {x:60,  z:330, angle:0.1,  length:9,   radius:0.75, swingRange:4.0, period:3.2, phase:3.1},
+];
+const pendulumChainMat = new THREE.MeshStandardMaterial({color:0x2a2622, roughness:0.6, metalness:0.5});
+function buildPendulumLog(p){
+  const y = terrainHeight(p.x,p.z);
+  const postH = 3.6;
+  const ca=Math.cos(p.angle), sa=Math.sin(p.angle);
+  [-1,1].forEach(side=>{
+    const px = p.x + ca*(p.length/2+0.3)*side, pz = p.z + sa*(p.length/2+0.3)*side;
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.12,postH,6), pendulumChainMat);
+    post.position.set(px, y+postH/2, pz);
+    scene.add(post);
+  });
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.07,p.length+0.7,6), pendulumChainMat);
+  beam.position.set(p.x, y+postH, p.z);
+  beam.rotation.z = Math.PI/2; beam.rotation.y = -p.angle;
+  scene.add(beam);
+  const logGeo = new THREE.CylinderGeometry(p.radius, p.radius*1.05, p.length, 9);
+  logGeo.rotateZ(Math.PI/2);
+  const log = new THREE.Mesh(logGeo, logMat);
+  log.castShadow=false;
+  scene.add(log);
+  const chainL = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,1,4), pendulumChainMat);
+  const chainR = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,1,4), pendulumChainMat);
+  scene.add(chainL); scene.add(chainR);
+  p.mesh=log; p.chainL=chainL; p.chainR=chainR; p.baseY=y; p.postH=postH; p.ca=ca; p.sa=sa; p.lastHitAt=-99;
+}
+PENDULUM_LOGS.forEach(buildPendulumLog);
+function updatePendulumLogs(dt){
+  for(const p of PENDULUM_LOGS){
+    const offset = Math.sin(elapsed/p.period*Math.PI*2+p.phase)*p.swingRange;
+    const cx = p.x - p.sa*offset, cz = p.z + p.ca*offset;
+    const logY = p.baseY+1.15;
+    p.mesh.position.set(cx, logY, cz);
+    p.mesh.rotation.y = -p.angle;
+    const beamY = p.baseY+p.postH;
+    const chainH = Math.max(0.1, beamY-logY);
+    p.chainL.position.set(cx-p.ca*p.length/2, (logY+beamY)/2, cz-p.sa*p.length/2);
+    p.chainL.scale.y = chainH;
+    p.chainR.position.set(cx+p.ca*p.length/2, (logY+beamY)/2, cz+p.sa*p.length/2);
+    p.chainR.scale.y = chainH;
+
+    if(over || jumpY > p.radius+0.3) continue;
+    const dx=player.position.x-cx, dz=player.position.z-cz;
+    const u = dx*p.ca+dz*p.sa;
+    if(Math.abs(u) > p.length/2+0.3) continue;
+    const v = -dx*p.sa+dz*p.ca;
+    const minDist = p.radius+0.55;
+    if(Math.abs(v) < minDist){
+      if(elapsed-p.lastHitAt>0.8){
+        p.lastHitAt = elapsed;
+        damagePlayer(16);
+        shakeAmt=Math.max(shakeAmt,0.6);
+        AudioSys.hit();
+      }
+      const push = minDist-Math.abs(v)+0.05;
+      const dir = v>=0?1:-1;
+      player.position.x += -p.sa*dir*push;
+      player.position.z += p.ca*dir*push;
+    }
+  }
+}
+
 /* ---------- Bounce pads — spring off them for a big launch, fun way to clear ground fast ---------- */
 const BOUNCE_PADS = [
   {x:-10, z:210, r:2.1, power:11.5},
   {x:130, z:165, r:2.1, power:11.5},
   {x:230, z:210, r:2.1, power:12},
   {x:-150,z:350, r:2.1, power:12},
+  // a bounce-pad chain — three in a row for a fun consecutive-launch run
+  {x:300, z:180, r:2.0, power:11},
+  {x:300, z:195, r:2.0, power:11},
+  {x:300, z:210, r:2.0, power:11},
+  {x:-260,z:270, r:2.1, power:12},
 ];
 const bouncePadMat = new THREE.MeshStandardMaterial({color:0x2fd1a6, emissive:0x0e5c46, emissiveIntensity:0.8, roughness:0.4, metalness:0.3});
 const bounceCoilMat = new THREE.MeshStandardMaterial({color:0x8fa8a0, roughness:0.5, metalness:0.6});
@@ -788,6 +897,8 @@ const GEYSERS = [
   {x:120, z:145, cycle:7.0, offset:5.2, radius:2.8},
   {x:190, z:340, cycle:7.5, offset:1.5, radius:3.0},
   {x:-110,z:360, cycle:8.0, offset:4.2, radius:2.8},
+  {x:250, z:300, cycle:7.2, offset:2.4, radius:3.0},
+  {x:-200,z:180, cycle:8.2, offset:6.0, radius:2.8},
 ];
 const geyserSteamTex = (()=>{
   const c=document.createElement('canvas'); c.width=c.height=64;
@@ -876,11 +987,11 @@ for(let i=0;i<conePos.count;i++){
   const fine = (Math.sin(x*1.6+y*0.9)+Math.cos(z*1.4-y*1.1))*0.3;
   const micro = (Math.sin(x*3.1+z*2.6+y*1.8)+Math.cos(x*2.3-z*3.4))*0.16; // fine rocky roughness
   // radial erosion gullies raked down the slope, like a real stratovolcano's barranco ridges
-  const gully = Math.pow(Math.abs(Math.sin(ang*9 + Math.sin(y*0.05)*0.6)), 2.2) * 2.9 * Math.min(1, Math.max(0,(50-y)/60));
+  const gully = Math.pow(Math.abs(Math.sin(ang*9 + Math.sin(y*0.05)*0.6)), 2.0) * 3.8 * Math.min(1, Math.max(0,(50-y)/60));
   const dir = new THREE.Vector3(x,0,z).normalize();
-  const newX = x+dir.x*(n*0.7+fine+micro-gully*0.55);
-  const newZ = z+dir.z*(n*0.7+fine+micro-gully*0.55);
-  const sculptedY = y + Math.sin(x*0.15+z*0.18)*1.1 + Math.sin(x*0.6-z*0.5)*0.22 - gully*0.65;
+  const newX = x+dir.x*(n*0.7+fine+micro-gully*0.62);
+  const newZ = z+dir.z*(n*0.7+fine+micro-gully*0.62);
+  const sculptedY = y + Math.sin(x*0.15+z*0.18)*1.1 + Math.sin(x*0.6-z*0.5)*0.22 - gully*0.8;
   // weld the foot of the mountain to the actual ground height directly beneath it, fading
   // out higher up the slope so the sculpted shape takes over — this is what stops the
   // mountain's base from hovering above (or sinking through) the surrounding terrain
@@ -895,13 +1006,16 @@ for(let i=0;i<conePos.count;i++){
 coneGeo.computeVertexNormals();
 {
   const colors = new Float32Array(conePos.count*3);
-  const rockCol = new THREE.Color(0x8f8478), sootCol = new THREE.Color(0x2b231d), rustCol = new THREE.Color(0x8a4a28);
+  const rockCol = new THREE.Color(0x5a4032), sootCol = new THREE.Color(0x161009), rustCol = new THREE.Color(0xb8501f);
   for(let i=0;i<conePos.count;i++){
-    const y = conePos.getY(i);
+    const x=conePos.getX(i), y=conePos.getY(i), z=conePos.getZ(i);
+    const ang = Math.atan2(z,x);
     const t = THREE.MathUtils.clamp((y+50)/100, 0, 1);
-    let col = rockCol.clone().lerp(sootCol, Math.min(1,t*0.75));
-    if(t>0.72) col = col.lerp(rustCol, ((t-0.72)/0.28)*0.55);
-    const v = 0.78+Math.random()*0.44;
+    let col = rockCol.clone().lerp(sootCol, Math.min(1,t*0.8));
+    // vertical rust streaks echoing the sculpted erosion gullies, for a fluted, weathered look
+    const streak = Math.pow(Math.abs(Math.sin(ang*9 + Math.sin(y*0.05)*0.6)), 2.2);
+    col = col.lerp(rustCol, streak*0.42 + (t>0.68 ? ((t-0.68)/0.32)*0.4 : 0));
+    const v = 0.72+Math.random()*0.5;
     colors[i*3]=col.r*v; colors[i*3+1]=col.g*v; colors[i*3+2]=col.b*v;
   }
   coneGeo.setAttribute('color', new THREE.BufferAttribute(colors,3));
@@ -945,6 +1059,7 @@ const rockTex = (()=>{
   }
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS=THREE.RepeatWrapping; tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(4,3);
+  tex.anisotropy = maxAniso;
   return tex;
 })();
 const coneNormalMap = buildNoiseNormalMap(isLowPower?64:128, 10);
@@ -1094,6 +1209,134 @@ studyRoom.position.copy(studyRoomPos);
 studyRoom.lookAt(0, studyRoomPos.y, 0);
 scene.add(studyRoom);
 
+/* ---------- Volcano Research Institute (火山研究所) + chairlift-style ropeway to the crater rim ----------
+   Sits on the far side of the volcano from where the player starts (negative-Z side, opposite
+   the escape route), so finding it is its own small reward. Riding the ropeway is a slow,
+   scripted round trip up to a viewing platform near the crater and back — a deliberately risky
+   detour, since bombs and the shockwave don't care that you're sightseeing. */
+function buildInstitute(){
+  const g = new THREE.Group();
+  const wallMat = new THREE.MeshStandardMaterial({color:0xaab4bc, roughness:0.75});
+  const trimMat = new THREE.MeshStandardMaterial({color:0x2f4a5c, roughness:0.6});
+  const walls = new THREE.Mesh(new THREE.BoxGeometry(11,5.4,8), wallMat);
+  walls.position.y=2.7; walls.castShadow=true; walls.receiveShadow=true; g.add(walls);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(11.6,0.4,8.6), trimMat);
+  roof.position.y=5.6; roof.castShadow=true; g.add(roof);
+  // a small observation dome, since it's a research institute
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(1.6,14,10,0,Math.PI*2,0,Math.PI/2), trimMat);
+  dome.position.set(3.2,5.8,0); dome.castShadow=true; g.add(dome);
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1.6,2.6,0.15),
+    new THREE.MeshStandardMaterial({color:0x1c2a30, roughness:0.5}));
+  door.position.set(-3,1.3,4.05); g.add(door);
+  const winMat = new THREE.MeshStandardMaterial({color:0xbfe6ff, emissive:0x8fd0ff, emissiveIntensity:0.7, roughness:0.3});
+  [-0.5,1.5,3.5].forEach(x=>{
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(1.3,1.5), winMat);
+    win.position.set(x,2.8,4.03); g.add(win);
+  });
+  const signTex = (()=>{
+    const c=document.createElement('canvas'); c.width=640; c.height=192;
+    const ctx2=c.getContext('2d');
+    ctx2.fillStyle='#eef3f6'; ctx2.fillRect(0,0,640,192);
+    ctx2.strokeStyle='#2f4a5c'; ctx2.lineWidth=8; ctx2.strokeRect(6,6,628,180);
+    ctx2.fillStyle='#1c2a30'; ctx2.font='bold 84px "Hiragino Sans","Yu Gothic",sans-serif';
+    ctx2.textAlign='center'; ctx2.textBaseline='middle'; ctx2.fillText('火山研究所',320,100);
+    return new THREE.CanvasTexture(c);
+  })();
+  const board = new THREE.Mesh(new THREE.PlaneGeometry(4.6,1.4), new THREE.MeshStandardMaterial({map:signTex}));
+  board.position.set(0,6.3,0); board.castShadow=true; g.add(board);
+  return g;
+}
+const institute = buildInstitute();
+const institutePos = new THREE.Vector3(0, 0, -108);
+institutePos.y = terrainHeight(institutePos.x, institutePos.z);
+institute.position.copy(institutePos);
+institute.lookAt(0, institutePos.y, 0);
+scene.add(institute);
+
+const ROPE_BOTTOM = { x:0, z:-97, y: terrainHeight(0,-97)+2.4 };
+const ROPE_TOP = { x:0, z:-18, y: volcano.position.y+98.75 }; // right at the existing crater-rim ring mesh
+const ROPEWAY_UP_DURATION = 11, ROPEWAY_PAUSE_DURATION = 4, ROPEWAY_DOWN_DURATION = 11;
+function buildChairSeat(){
+  const g = new THREE.Group();
+  const seatMat = new THREE.MeshStandardMaterial({color:0xd94f2b, roughness:0.6});
+  const barMat = new THREE.MeshStandardMaterial({color:0x2a2622, roughness:0.5, metalness:0.6});
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(1.1,0.12,0.7), seatMat);
+  seat.position.y=0; g.add(seat);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(1.1,0.7,0.1), seatMat);
+  back.position.set(0,0.4,-0.32); g.add(back);
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,1.0,5), barMat);
+  bar.rotation.z=Math.PI/2; bar.position.set(0,0.6,0.5); g.add(bar);
+  [-0.5,0.5].forEach(x=>{
+    const hang = new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,1.1,4), barMat);
+    hang.position.set(x,0.85,-0.15); g.add(hang);
+  });
+  return g;
+}
+function buildRopeway(){
+  const towerMat = new THREE.MeshStandardMaterial({color:0x4a4640, roughness:0.6, metalness:0.4});
+  const cableMat = new THREE.MeshStandardMaterial({color:0x1c1a18, roughness:0.5, metalness:0.6});
+  const dx=ROPE_TOP.x-ROPE_BOTTOM.x, dz=ROPE_TOP.z-ROPE_BOTTOM.z, dist=Math.hypot(dx,dz);
+  const towerCount = 3;
+  for(let i=1;i<=towerCount;i++){
+    const t = i/(towerCount+1);
+    const tx = ROPE_BOTTOM.x+dx*t, tz = ROPE_BOTTOM.z+dz*t;
+    const cableY = ROPE_BOTTOM.y+(ROPE_TOP.y-ROPE_BOTTOM.y)*t;
+    const groundY = terrainHeight(tx,tz);
+    const h = Math.max(2, cableY-groundY+0.6);
+    const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.26,h,7), towerMat);
+    tower.position.set(tx, groundY+h/2, tz);
+    tower.castShadow=false; tower.receiveShadow=true;
+    scene.add(tower);
+    const crossbar = new THREE.Mesh(new THREE.BoxGeometry(1.6,0.12,0.3), towerMat);
+    crossbar.position.set(tx, groundY+h+0.1, tz);
+    scene.add(crossbar);
+  }
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(ROPE_BOTTOM.x,ROPE_BOTTOM.y,ROPE_BOTTOM.z),
+    new THREE.Vector3(ROPE_BOTTOM.x+dx*0.5, ROPE_BOTTOM.y+(ROPE_TOP.y-ROPE_BOTTOM.y)*0.5+0.4, ROPE_BOTTOM.z+dz*0.5),
+    new THREE.Vector3(ROPE_TOP.x,ROPE_TOP.y,ROPE_TOP.z),
+  ]);
+  const cable = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.05, 5, false), cableMat);
+  scene.add(cable);
+  // a viewing platform at the top, right on the crater rim
+  const platMat = new THREE.MeshStandardMaterial({color:0x6b6156, roughness:0.9, flatShading:true});
+  const platform = new THREE.Mesh(new THREE.CylinderGeometry(3.2,3.4,0.5,10), platMat);
+  platform.position.set(ROPE_TOP.x, ROPE_TOP.y-0.5, ROPE_TOP.z);
+  platform.castShadow=false; platform.receiveShadow=true;
+  scene.add(platform);
+  const railMat = new THREE.MeshStandardMaterial({color:0x3a3630, roughness:0.6, metalness:0.4});
+  for(let i=0;i<10;i++){
+    const a=(i/10)*Math.PI*2;
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,0.9,5), railMat);
+    post.position.set(ROPE_TOP.x+Math.cos(a)*3.1, ROPE_TOP.y-0.1, ROPE_TOP.z+Math.sin(a)*3.1);
+    scene.add(post);
+  }
+  // a handful of decorative chairs cycling along the cable, always running for atmosphere
+  const decoChairs = [];
+  const decoCount = isLowPower?3:5;
+  for(let i=0;i<decoCount;i++){
+    const chair = buildChairSeat();
+    scene.add(chair);
+    decoChairs.push({mesh:chair, offset:i/decoCount});
+  }
+  const riderChair = buildChairSeat();
+  riderChair.visible = false;
+  scene.add(riderChair);
+  return {curve, decoChairs, riderChair};
+}
+const ropeway = buildRopeway();
+function updateRopewayChairs(now){
+  const cycle = (ROPEWAY_UP_DURATION+ROPEWAY_DOWN_DURATION)*1.6;
+  for(const c of ropeway.decoChairs){
+    const t = ((now*0.001/cycle)+c.offset)%1;
+    const u = t<0.5 ? t*2 : 2-t*2; // up then back down, looping
+    const p = ropeway.curve.getPoint(u);
+    c.mesh.position.set(p.x, p.y-0.9, p.z);
+    const look = ropeway.curve.getTangent(u);
+    c.mesh.rotation.y = Math.atan2(look.x, look.z) + (t<0.5?0:Math.PI);
+  }
+}
+
 /* ---------- Lava flow streams (glowing rivers down the slope, animated) ---------- */
 const lavaFlowTex = (()=>{
   const c=document.createElement('canvas'); c.width=96; c.height=384;
@@ -1238,7 +1481,7 @@ buildLavaPool(3.2, 3.8, 5.8);
   geo.computeVertexNormals();
   const skirtNormalMap = coneNormalMap.clone(); skirtNormalMap.needsUpdate = true; skirtNormalMap.repeat.set(2,1);
   const skirtRoughMap = groundRoughMap.clone(); skirtRoughMap.needsUpdate = true; skirtRoughMap.repeat.set(2,1);
-  const mat = new THREE.MeshStandardMaterial({vertexColors:true, map:rockTex, roughness:1, flatShading:true,
+  const mat = new THREE.MeshStandardMaterial({vertexColors:true, map:rockTex, roughness:1, flatShading:false,
     normalMap:skirtNormalMap, normalScale:new THREE.Vector2(0.7,0.7), roughnessMap:skirtRoughMap});
   mat.map = mat.map.clone(); mat.map.needsUpdate = true; mat.map.repeat.set(2,1);
   const skirt = new THREE.Mesh(geo, mat);
@@ -1393,6 +1636,9 @@ const NPCS = [
   {x:160,  z:235, color:0x8a3ad5, rescued:false},
   {x:-110, z:335, color:0x3ad58a, rescued:false},
   {x:200,  z:320, color:0xd5573a, rescued:false},
+  {x:-230, z:220, color:0x5ad5d5, rescued:false},
+  {x:270,  z:260, color:0xd5d53a, rescued:false},
+  {x:80,   z:400, color:0xd53a8a, rescued:false},
 ];
 const npcLegMat = new THREE.MeshStandardMaterial({color:0x2b2f3a, roughness:0.85});
 function buildNPC(n){
@@ -1546,6 +1792,7 @@ let ziplineActive=false, ziplineT=0;
 const zipFrom=new THREE.Vector3(), zipTo=new THREE.Vector3();
 const ZIP_DURATION=1.6;
 let swingActive=false, swingT=0, swingCooldownUntil=0;
+let ropewayActive=false, ropewayPhase='up', ropewayT=0, ropewayPauseT=0, nearInstitute=false;
 const SWING_DURATION=1.1, SWING_ARC_HEIGHT=3.2;
 let gustActive=false, gustT=0, nextGustAt=14+Math.random()*8, gustDirX=0, gustDirZ=0, gustStrength=0;
 const GUST_DURATION=1.4;
@@ -1665,14 +1912,14 @@ function updateBombs(dt, now){
 let ashPuffs=[];
 function spawnMushroomCloud(){
   crater.getWorldPosition(craterWorld);
-  const puffCount = isLowPower?3:5;
+  const puffCount = isLowPower?4:7;
   for(let i=0;i<puffCount;i++){
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:smokeTex, color:0x362e28, transparent:true, opacity:0.78, depthWrite:false}));
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:smokeTex, color:0x241d18, transparent:true, opacity:0.86, depthWrite:false}));
     const ang=Math.random()*Math.PI*2, r=Math.random()*8;
     sprite.position.set(craterWorld.x+Math.cos(ang)*r, craterWorld.y+6+Math.random()*10, craterWorld.z+Math.sin(ang)*r);
-    sprite.scale.set(14,14,1);
+    sprite.scale.set(16,16,1);
     scene.add(sprite);
-    ashPuffs.push({sprite, age:0, life:5+Math.random()*2, riseSpeed:4+Math.random()*3, growTo:60+Math.random()*30});
+    ashPuffs.push({sprite, age:0, life:6+Math.random()*2.5, riseSpeed:4.5+Math.random()*3.5, growTo:78+Math.random()*36});
   }
 }
 function updateAshPuffs(dt){
@@ -1948,6 +2195,36 @@ const fountain = new THREE.Points(fountainGeo, fountainMat);
 scene.add(fountain);
 const craterWorld = new THREE.Vector3();
 const hotCol = new THREE.Color(0xfff3c0), coolCol = new THREE.Color(0x7a1c04);
+
+/* ---------- Flame jet — a stack of flickering additive glow sprites forming a solid-looking
+   blazing fire column over the crater (like a real fountain eruption photo), not just sparse
+   particles. Small and simmering when calm, roaring tall and bright during a big eruption. */
+const FLAME_COUNT = isLowPower?5:9;
+const flameSprites = [];
+for(let i=0;i<FLAME_COUNT;i++){
+  const mat = new THREE.SpriteMaterial({map:fountainGlowTex, color:0xffb347, transparent:true, opacity:0.85, depthWrite:false, blending:THREE.AdditiveBlending});
+  const s = new THREE.Sprite(mat);
+  s.scale.set(6,9,1);
+  scene.add(s);
+  flameSprites.push({sprite:s, seed:Math.random()*10});
+}
+function updateFlameJet(now){
+  crater.getWorldPosition(craterWorld);
+  const baseIntensity = eruptionActive ? 1 : 0.34 + (volcanoPower-1)*0.15;
+  const heightScale = eruptionActive ? 1 : 0.42;
+  for(let i=0;i<flameSprites.length;i++){
+    const f = flameSprites[i];
+    const t = i/(flameSprites.length-1);
+    const flicker = 0.75+0.35*Math.sin(now*0.012+f.seed*3)+0.15*Math.sin(now*0.03+f.seed);
+    const h = (2.5 + t*10) * heightScale * flicker;
+    const wob = Math.sin(now*0.006+f.seed)*0.8*(1+t);
+    f.sprite.position.set(craterWorld.x+wob, craterWorld.y + t*(eruptionActive?16:6)*heightScale + 1, craterWorld.z+Math.cos(now*0.005+f.seed)*0.8*(1+t));
+    const w = (3.4 - t*1.6) * heightScale * (0.8+0.3*flicker);
+    f.sprite.scale.set(Math.max(0.2,w), Math.max(0.3,h), 1);
+    f.sprite.material.color.setRGB(1, 0.55+0.35*(1-t), 0.15+0.25*(1-t));
+    f.sprite.material.opacity = Math.min(1, baseIntensity*(1-t*0.45)*flicker*0.9);
+  }
+}
 function updateFountain(dt, now){
   crater.getWorldPosition(craterWorld);
   const posAttr = fountainGeo.attributes.position;
@@ -2049,7 +2326,13 @@ addEventListener('keydown', e=>{
   if(e.code==='KeyE' && nearStudyRoom && !quizOpen && elapsed>=studyCooldownUntil && started && !over){
     openQuiz();
   }
+  if(e.code==='KeyE' && nearInstitute && !ropewayActive && started && !over){
+    ropewayActive=true; ropewayPhase='up'; ropewayT=0; grounded=false;
+    showToast('ロープウェイに乗車！', '#8fd0ff');
+    AudioSys.whoosh(ROPEWAY_UP_DURATION*0.6);
+  }
 });
+const institutePromptEl = document.getElementById('institutePrompt');
 function updateStudyRoom(){
   const d = Math.hypot(player.position.x-studyRoomPos.x, player.position.z-studyRoomPos.z);
   nearStudyRoom = d < 6;
@@ -2062,6 +2345,11 @@ function updateStudyRoom(){
   } else {
     studyPromptEl.classList.remove('show');
   }
+}
+function updateInstitutePrompt(){
+  const d = Math.hypot(player.position.x-institutePos.x, player.position.z-institutePos.z);
+  nearInstitute = d < 7 && !ropewayActive;
+  institutePromptEl.classList.toggle('show', nearInstitute);
 }
 
 /* ---------- Rolling boulder (large hazard chasing outward from the volcano) ---------- */
@@ -2236,6 +2524,38 @@ function movePlayer(dt){
     }
     return;
   }
+  if(ropewayActive){
+    ropeway.riderChair.visible = true;
+    if(ropewayPhase==='up'){
+      ropewayT += dt/ROPEWAY_UP_DURATION;
+      const t = Math.min(1, ropewayT);
+      const p = ropeway.curve.getPoint(t);
+      player.position.set(p.x, p.y, p.z);
+      const look = ropeway.curve.getTangent(t);
+      player.rotation.y = Math.atan2(look.x, look.z);
+      ropeway.riderChair.position.set(p.x, p.y-0.9, p.z);
+      ropeway.riderChair.rotation.y = player.rotation.y;
+      if(t>=1){ ropewayPhase='pause'; ropewayPauseT=0; showToast('火口が目の前に…絶景だ', '#ffb347'); AudioSys.chime(); }
+    } else if(ropewayPhase==='pause'){
+      ropewayPauseT += dt;
+      if(ropewayPauseT>=ROPEWAY_PAUSE_DURATION){ ropewayPhase='down'; ropewayT=0; showToast('下山します', '#dfe8ea'); }
+    } else {
+      ropewayT += dt/ROPEWAY_DOWN_DURATION;
+      const t = Math.min(1, ropewayT);
+      const p = ropeway.curve.getPoint(1-t);
+      player.position.set(p.x, p.y, p.z);
+      const look = ropeway.curve.getTangent(1-t);
+      player.rotation.y = Math.atan2(-look.x, -look.z);
+      ropeway.riderChair.position.set(p.x, p.y-0.9, p.z);
+      ropeway.riderChair.rotation.y = player.rotation.y;
+      if(t>=1){
+        ropewayActive=false; ropeway.riderChair.visible=false; grounded=true; jumpY=0; jumpVel=0;
+        showToast('研究所に到着', '#7bffa0');
+      }
+    }
+    distTraveled = Math.hypot(player.position.x, player.position.z);
+    return;
+  }
   let mx=0, mz=0;
   if(keys['KeyW']||keys['ArrowUp']) mz-=1;
   if(keys['KeyS']||keys['ArrowDown']) mz+=1;
@@ -2408,7 +2728,7 @@ function animate(now){
   requestAnimationFrame(animate);
   const dt = Math.min(0.05,(now-lastTime)/1000);
   lastTime = now;
-  if(!started || over){ renderer.render(scene,camera); return; }
+  if(!started || over){ renderFrame(); return; }
 
   if(!quizOpen){
   elapsed += dt;
@@ -2443,6 +2763,8 @@ function animate(now){
   updateBoulders(dt);
   }
   updateStudyRoom();
+  updateInstitutePrompt();
+  updateRopewayChairs(now);
 
   // visibility from ash (depletes slowly, worse near volcano / during eruption)
   // NOTE: horizontal distance only — using the full 3D length would let height (jumps, the
@@ -2465,6 +2787,7 @@ function animate(now){
   updateAshPuffs(dt);
   updateGeysers(dt);
   updateNPCs(dt, now);
+  updatePendulumLogs(dt);
   updatePumice(dt);
   }
 
@@ -2501,8 +2824,9 @@ function animate(now){
     }
   }
   sPos.needsUpdate = true;
-  smokeMat.opacity = 0.55 + eruptGlow*0.3;
-  smokeMat.color.setRGB(1-eruptGlow*0.55, 1-eruptGlow*0.62, 1-eruptGlow*0.65);
+  smokeMat.opacity = 0.6 + eruptGlow*0.35;
+  smokeMat.color.setRGB(1-eruptGlow*0.72, 1-eruptGlow*0.78, 1-eruptGlow*0.8);
+  smokeMat.size = 26 + eruptGlow*14;
 
   // crater flicker
   emberLight.intensity = 3.5 + Math.sin(now*0.006)*0.8 + (eruptionActive?3:0) + (volcanoPower-1)*3;
@@ -2526,11 +2850,12 @@ function animate(now){
     mat.emissiveIntensity = 2.0 + Math.sin(now*0.004+mat.emissiveIntensity)*0.4 + (eruptionActive?1.2:0);
   }
   updateFountain(dt, now);
+  updateFlameJet(now);
 
   if(distFromVolcano > GOAL_DIST) endGame(true);
 
   updateHUD();
-  renderer.render(scene, camera);
+  renderFrame();
 }
 
 /* ============================== START / RESET ============================== */
@@ -2558,6 +2883,9 @@ function resetGame(){
   comboCount=0; lastNearMissAt=-99;
   rescueCount=0;
   NPCS.forEach(n=>{ if(n.rescued) scene.add(n.mesh); n.rescued=false; });
+  PENDULUM_LOGS.forEach(p=>{ p.lastHitAt=-99; });
+  ropewayActive=false; ropewayPhase='up'; ropewayT=0; ropewayPauseT=0;
+  ropeway.riderChair.visible=false;
   lastFootStep=0;
   document.getElementById('quizModal').classList.remove('show');
   document.getElementById('studyPrompt').classList.remove('show');
