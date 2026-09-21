@@ -69,6 +69,10 @@
     background:rgba(10,7,5,.7); border:1px solid rgba(255,255,255,.2); color:#fff; padding:8px 18px;
     font-size:14px; letter-spacing:.05em; opacity:0; transition:opacity .2s; pointer-events:none; }
   #studyPrompt.show{ opacity:1; }
+  #institutePrompt{ position:absolute; bottom:120px; left:50%; transform:translateX(-50%);
+    background:rgba(10,7,5,.7); border:1px solid rgba(255,255,255,.2); color:#fff; padding:8px 18px;
+    font-size:14px; letter-spacing:.05em; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #institutePrompt.show{ opacity:1; }
   #quizModal{ position:fixed; inset:0; background:rgba(6,4,3,.82); z-index:40; display:flex;
     align-items:center; justify-content:center; opacity:0; pointer-events:none; transition:opacity .3s; }
   #quizModal.show{ opacity:1; pointer-events:auto; }
