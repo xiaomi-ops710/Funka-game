@@ -1530,7 +1530,15 @@ function buildOnsen(){
     rock.rotation.set(Math.random()*6,Math.random()*6,Math.random()*6);
     g.add(rock);
   }
-  const steamMat = new THREE.SpriteMaterial({map:smokeTex, color:0xe8ece8, transparent:true, opacity:0.4, depthWrite:false});
+  const onsenSteamTex = (()=>{
+    const c=document.createElement('canvas'); c.width=c.height=64;
+    const ctx2=c.getContext('2d');
+    const grad=ctx2.createRadialGradient(32,32,0,32,32,32);
+    grad.addColorStop(0,'rgba(255,255,255,0.9)'); grad.addColorStop(0.6,'rgba(230,235,230,0.4)'); grad.addColorStop(1,'rgba(220,225,220,0)');
+    ctx2.fillStyle=grad; ctx2.fillRect(0,0,64,64);
+    return new THREE.CanvasTexture(c);
+  })();
+  const steamMat = new THREE.SpriteMaterial({map:onsenSteamTex, color:0xe8ece8, transparent:true, opacity:0.4, depthWrite:false});
   for(let i=0;i<4;i++){
     const s = new THREE.Sprite(steamMat.clone());
     const a=(i/4)*Math.PI*2;
@@ -2828,6 +2836,7 @@ function movePlayer(dt){
     }
     return;
   }
+  let mx=0, mz=0;
   if(keys['KeyW']||keys['ArrowUp']) mz-=1;
   if(keys['KeyS']||keys['ArrowDown']) mz+=1;
   if(keys['KeyA']||keys['ArrowLeft']) mx-=1;
