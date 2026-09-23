@@ -937,6 +937,8 @@ const BOUNCE_PADS = [
   {x:300, z:210, r:2.0, power:11},
   {x:-260,z:270, r:2.1, power:12},
   {x:170, z:415, r:2.2, power:12.5},
+  // extra-strong pad launching up onto the hidden gold platform (see CRUMBLE_PLATFORMS)
+  {x:250, z:142, r:2.0, power:17.5},
 ];
 const bouncePadMat = new THREE.MeshStandardMaterial({color:0x2fd1a6, emissive:0x0e5c46, emissiveIntensity:0.8, roughness:0.4, metalness:0.3});
 const bounceCoilMat = new THREE.MeshStandardMaterial({color:0x8fa8a0, roughness:0.5, metalness:0.6});
@@ -1037,13 +1039,16 @@ const CRUMBLE_PLATFORMS = [
   {x:-303, z:239, r:1.7, riseH:3.3},
   {x:-297, z:256, r:1.7, riseH:3.7},
   {x:-302, z:273, r:1.7, riseH:3.4},
+  // solid (non-collapsing) reward ledge — reachable only via the high-power bounce pad chain below
+  {x:250, z:150, r:2.4, riseH:7.5, permanent:true, reward:180},
 ];
 const crumbleMat = new THREE.MeshStandardMaterial({color:0x7a6a52, roughness:0.9, flatShading:true});
+const crumbleGoldMat = new THREE.MeshStandardMaterial({color:0xc9a24a, roughness:0.6, metalness:0.3, emissive:0x5a3f10, emissiveIntensity:0.5, flatShading:true});
 const crumbleCrackMat = new THREE.MeshStandardMaterial({color:0x3a2f22, roughness:1, flatShading:true, emissive:0x000000});
 CRUMBLE_PLATFORMS.forEach(p=>{
   const groundY = terrainHeight(p.x,p.z);
   p.baseY = groundY + p.riseH;
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(p.r, p.r*1.08, 0.5, 8), crumbleMat);
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(p.r, p.r*1.08, 0.5, 8), p.permanent?crumbleGoldMat:crumbleMat);
   mesh.position.set(p.x, p.baseY, p.z);
   mesh.castShadow=true; mesh.receiveShadow=true;
   scene.add(mesh);
@@ -1052,7 +1057,7 @@ CRUMBLE_PLATFORMS.forEach(p=>{
   const col = new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.24,p.riseH,6), crumbleCrackMat);
   col.position.set(p.x, groundY+p.riseH/2, p.z);
   scene.add(col);
-  p.mesh = mesh; p.state='solid'; p.standTimer=0; p.shakeTimer=0; p.respawnTimer=0; p.groundY=groundY;
+  p.mesh = mesh; p.state='solid'; p.standTimer=0; p.shakeTimer=0; p.respawnTimer=0; p.groundY=groundY; p.rewardGiven=false;
 });
 function crumblePlatformAt(x,z){
   for(const p of CRUMBLE_PLATFORMS){
@@ -1063,6 +1068,7 @@ function crumblePlatformAt(x,z){
 }
 function updateCrumblePlatforms(dt, standingOn){
   for(const p of CRUMBLE_PLATFORMS){
+    if(p.permanent) continue; // solid reward ledges never shake or collapse
     if(p.state==='solid'){
       p.mesh.position.x = p.x; p.mesh.position.z = p.z; p.mesh.position.y = p.baseY;
       if(standingOn===p){
@@ -1143,6 +1149,96 @@ function updateUpdraftVents(dt, now){
         AudioSys.chime();
       }
     }
+  }
+}
+
+/* ---------- NEW GIMMICK: 回転丸太ローラー (spinning log rollers) ----------
+   A fat log bridging a short gap, spinning continuously on its own axis. Standing on it drags
+   you sideways with the rotation — you have to actively counter-steer to stay on, or you slip
+   off the side and drop into the gap below (a short, forgiving fall with a little damage). */
+const LOG_ROLLERS = [
+  {cx:110, cz:290, angle:0.25, len:9, rad:0.95, spin:2.3},
+  {cx:-190,cz:230, angle:-0.35, len:9, rad:0.95, spin:-2.0},
+];
+const rollerLogMat = new THREE.MeshStandardMaterial({color:0x6b4a2e, roughness:0.85, flatShading:true});
+LOG_ROLLERS.forEach(r=>{
+  r.groundY = terrainHeight(r.cx,r.cz);
+  r.topY = r.groundY + r.rad;
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(r.rad, r.rad, r.len, 12, 1, false), rollerLogMat);
+  mesh.rotation.z = Math.PI/2;
+  mesh.rotation.y = r.angle;
+  mesh.position.set(r.cx, r.topY, r.cz);
+  // wood-grain rings so the spin is actually visible, not just implied
+  const ringMat = new THREE.MeshStandardMaterial({color:0x4a3320, roughness:0.9});
+  for(let i=-3;i<=3;i++){
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(r.rad*1.01, 0.03, 6, 16), ringMat);
+    ring.position.copy(mesh.position);
+    ring.position.x += Math.sin(r.angle)*i*(r.len/8);
+    ring.position.z += Math.cos(r.angle)*i*(r.len/8);
+    ring.rotation.y = r.angle; ring.rotation.x = Math.PI/2;
+    mesh.add(ring); // rotates with the log below
+  }
+  scene.add(mesh);
+  r.mesh = mesh;
+});
+function rollerAt(x,z){
+  for(const r of LOG_ROLLERS){
+    const {u,v} = zoneLocal(x,z,{cx:r.cx,cz:r.cz,angle:r.angle});
+    if(Math.abs(u) < r.len/2 && Math.abs(v) < r.rad*1.05) return r;
+  }
+  return null;
+}
+function updateLogRollers(dt){
+  for(const r of LOG_ROLLERS) r.mesh.rotation.x += r.spin*dt;
+}
+
+/* ---------- NEW BUILDING: 避難シェルター (evacuation shelter) ----------
+   A squat concrete bunker along the route. Step inside and you're safe from bomb and shockwave
+   damage — a deliberate safe harbor to duck into when a big eruption is bearing down, at the
+   cost of standing still and losing time. */
+const SHELTER_POS = new THREE.Vector3(-200, 0, 150);
+SHELTER_POS.y = terrainHeight(SHELTER_POS.x, SHELTER_POS.z);
+const SHELTER_R = 4.2;
+function buildShelter(){
+  const g = new THREE.Group();
+  const wallMat = new THREE.MeshStandardMaterial({color:0x777066, roughness:0.95});
+  const stripeMat = new THREE.MeshStandardMaterial({color:0xffcc33, roughness:0.6});
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(3.6,16,10,0,Math.PI*2,0,Math.PI/2.1), wallMat);
+  dome.position.y=0; dome.castShadow=true; dome.receiveShadow=true; g.add(dome);
+  const doorFrame = new THREE.Mesh(new THREE.BoxGeometry(1.8,2.4,0.3), new THREE.MeshStandardMaterial({color:0x2a2622}));
+  doorFrame.position.set(0,1.2,3.5); g.add(doorFrame);
+  for(let i=0;i<4;i++){
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.3,0.5,0.15), stripeMat);
+    const a=(i/4)*Math.PI*2;
+    stripe.position.set(Math.cos(a)*3.55,1.4,Math.sin(a)*3.55);
+    stripe.rotation.y=a;
+    g.add(stripe);
+  }
+  const signTex = (()=>{
+    const c=document.createElement('canvas'); c.width=512; c.height=160;
+    const ctx2=c.getContext('2d');
+    ctx2.fillStyle='#fff7dd'; ctx2.fillRect(0,0,512,160);
+    ctx2.strokeStyle='#c9a24a'; ctx2.lineWidth=8; ctx2.strokeRect(6,6,500,148);
+    ctx2.fillStyle='#2a2622'; ctx2.font='bold 66px "Hiragino Sans","Yu Gothic",sans-serif';
+    ctx2.textAlign='center'; ctx2.textBaseline='middle'; ctx2.fillText('避難シェルター',256,84);
+    return new THREE.CanvasTexture(c);
+  })();
+  const board = new THREE.Mesh(new THREE.PlaneGeometry(3.6,1.1), new THREE.MeshStandardMaterial({map:signTex}));
+  board.position.set(0,4.0,1.0); board.rotation.x=-0.3; g.add(board);
+  return g;
+}
+const shelter = buildShelter();
+shelter.position.copy(SHELTER_POS);
+scene.add(shelter);
+let playerSheltered = false, shelterMsgShown = false;
+function updateShelter(){
+  const d = Math.hypot(player.position.x-SHELTER_POS.x, player.position.z-SHELTER_POS.z);
+  playerSheltered = d < SHELTER_R;
+  if(playerSheltered && !shelterMsgShown){
+    shelterMsgShown = true;
+    showToast('シェルターは安全地帯だ', '#8ec6ff');
+  } else if(!playerSheltered){
+    shelterMsgShown = false;
   }
 }
 
@@ -1724,6 +1820,85 @@ const trolleyRailMat = new THREE.MeshStandardMaterial({color:0x2a2622, roughness
 const trolleyCart = buildTrolleyCart();
 trolleyCart.position.set(TROLLEY_STATION.x, terrainHeight(TROLLEY_STATION.x,TROLLEY_STATION.z)+0.3, TROLLEY_STATION.z);
 scene.add(trolleyCart);
+
+/* ---------- NEW BUILDING: 展望タワー (lookout tower) + パラグライダー ----------
+   A tall lattice tower with a maintenance lift to the top. From the platform up there, launch
+   a paraglider that scripts a long swooping descent back down toward the route — a fast,
+   scenic alternate way to cover ground, usable more than once. */
+const TOWER_BASE = {x:-220, z:240};
+const TOWER_HEIGHT = 17;
+const TOWER_TOP = { x:TOWER_BASE.x, y: terrainHeight(TOWER_BASE.x,TOWER_BASE.z)+TOWER_HEIGHT, z:TOWER_BASE.z };
+const GLIDE_LANDING = { x:60, z:270 };
+const TOWER_LIFT_DURATION = 3.2, GLIDE_DURATION = 6.5;
+function buildLookoutTower(){
+  const g = new THREE.Group();
+  const beamMat = new THREE.MeshStandardMaterial({color:0x5a5248, roughness:0.7, metalness:0.3});
+  const legOffsets = [[1.6,1.6],[1.6,-1.6],[-1.6,1.6],[-1.6,-1.6]];
+  legOffsets.forEach(([lx,lz])=>{
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.22,TOWER_HEIGHT,6), beamMat);
+    leg.position.set(lx, TOWER_HEIGHT/2, lz);
+    g.add(leg);
+  });
+  // X-cross bracing up the sides, a few tiers, so it reads as a lattice tower and not four poles
+  for(let tier=0;tier<5;tier++){
+    const y = (tier+0.5)*(TOWER_HEIGHT/5);
+    for(let side=0;side<4;side++){
+      const [ax,az] = legOffsets[side];
+      const [bx,bz] = legOffsets[(side+1)%4];
+      if(Math.hypot(ax-bx, az-bz) > 3) continue; // skip the diagonal pair, keep the 4 sides only
+      const midx=(ax+bx)/2, midz=(az+bz)/2, len=Math.hypot(ax-bx,az-bz);
+      const brace = new THREE.Mesh(new THREE.BoxGeometry(len,0.08,0.08), beamMat);
+      brace.position.set(midx,y,midz);
+      brace.rotation.y = Math.atan2(bx-ax,bz-az);
+      g.add(brace);
+    }
+  }
+  const platform = new THREE.Mesh(new THREE.CylinderGeometry(2.4,2.4,0.4,10), beamMat);
+  platform.position.y = TOWER_HEIGHT+0.2; platform.castShadow=true; g.add(platform);
+  const railMat = new THREE.MeshStandardMaterial({color:0x2f4a5c, roughness:0.6});
+  for(let i=0;i<8;i++){
+    const a=(i/8)*Math.PI*2;
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,1.0,5), railMat);
+    post.position.set(Math.cos(a)*2.3, TOWER_HEIGHT+0.9, Math.sin(a)*2.3);
+    g.add(post);
+  }
+  // a small lift cage riding the outside of one leg
+  const cage = new THREE.Mesh(new THREE.BoxGeometry(1.1,1.6,1.0),
+    new THREE.MeshStandardMaterial({color:0x8fa8a0, roughness:0.5, transparent:true, opacity:0.55}));
+  cage.position.set(1.6, 1.0, 1.6);
+  g.add(cage);
+  return {group:g, cage};
+}
+const towerBuild = buildLookoutTower();
+towerBuild.group.position.set(TOWER_BASE.x, terrainHeight(TOWER_BASE.x,TOWER_BASE.z), TOWER_BASE.z);
+scene.add(towerBuild.group);
+function buildParaglider(){
+  const g = new THREE.Group();
+  const canopyMat = new THREE.MeshStandardMaterial({color:0xff5a1f, roughness:0.7, side:THREE.DoubleSide});
+  const canopy = new THREE.Mesh(new THREE.SphereGeometry(1.6,10,4,0,Math.PI*2,0,Math.PI*0.45), canopyMat);
+  canopy.rotation.x = Math.PI; canopy.position.y = 1.9;
+  g.add(canopy);
+  const lineMat = new THREE.MeshStandardMaterial({color:0x2a2622});
+  [[-1,0],[1,0],[0,-0.9],[0,0.9]].forEach(([lx,lz])=>{
+    const line = new THREE.Mesh(new THREE.CylinderGeometry(0.01,0.01,1.9,4), lineMat);
+    line.position.set(lx*0.6, 0.95, lz*0.6);
+    g.add(line);
+  });
+  g.visible = false;
+  return g;
+}
+const paraglider = buildParaglider();
+scene.add(paraglider);
+let towerLiftActive=false, towerLiftT=0, atTowerTop=false, paraglideActive=false, paraglideT=0, paraglideRewardGiven=false, nearTowerBase=false, nearTowerTop=false;
+function updateTowerPrompts(){
+  const dBase = Math.hypot(player.position.x-TOWER_BASE.x, player.position.z-TOWER_BASE.z);
+  nearTowerBase = dBase < 5.5 && !towerLiftActive && !atTowerTop;
+  towerPromptEl.classList.toggle('show', nearTowerBase);
+  const dTop = atTowerTop ? Math.hypot(player.position.x-TOWER_TOP.x, player.position.z-TOWER_TOP.z) : 999;
+  nearTowerTop = atTowerTop && dTop < 3 && !paraglideActive;
+  glidePromptEl.classList.toggle('show', nearTowerTop);
+  towerBuild.cage.position.y = towerLiftActive ? THREE.MathUtils.lerp(1.0, TOWER_HEIGHT+1.0, Math.min(1,towerLiftT/TOWER_LIFT_DURATION)) : (atTowerTop ? TOWER_HEIGHT+1.0 : 1.0);
+}
 
 /* ---------- Hot spring (温泉) — a steaming volcanic pool. Standing in it heals you steadily,
    a rare moment of safety and relief along an otherwise hostile route. ---------- */
@@ -2827,9 +3002,21 @@ addEventListener('keydown', e=>{
     showToast('トロッコ出発！', '#ffd23f');
     AudioSys.whoosh(TROLLEY_DURATION);
   }
+  if(e.code==='KeyE' && nearTowerBase && started && !over){
+    towerLiftActive=true; towerLiftT=0; grounded=false;
+    showToast('リフトで展望タワーへ', '#8fa8a0');
+  }
+  if(e.code==='KeyE' && nearTowerTop && started && !over){
+    paraglideActive=true; paraglideT=0; atTowerTop=false; grounded=false;
+    paraglider.visible=true;
+    showToast('パラグライダー発進！', '#ff8a4c');
+    AudioSys.whoosh(GLIDE_DURATION*0.7);
+  }
 });
 const institutePromptEl = document.getElementById('institutePrompt');
 const trolleyPromptEl = document.getElementById('trolleyPrompt');
+const towerPromptEl = document.getElementById('towerPrompt');
+const glidePromptEl = document.getElementById('glidePrompt');
 function updateStudyRoom(){
   const d = Math.hypot(player.position.x-studyRoomPos.x, player.position.z-studyRoomPos.z);
   nearStudyRoom = d < 6;
@@ -2894,6 +3081,7 @@ function updateBoulders(dt){
 /* ---------- Damage / health ---------- */
 function damagePlayer(amount){
   if(over) return;
+  if(playerSheltered) amount *= 0.1; // safe inside the shelter — most damage is negated, not all
   health = Math.max(0, health-amount);
   healthBar.style.width = health+'%';
   vignette.style.boxShadow = `inset 0 0 160px 40px rgba(255,20,20,${0.15+amount/100})`;
@@ -3096,7 +3284,42 @@ function movePlayer(dt){
     }
     return;
   }
-  let mx=0, mz=0;
+  if(towerLiftActive){
+    towerLiftT += dt;
+    const t = Math.min(1, towerLiftT/TOWER_LIFT_DURATION);
+    const y = THREE.MathUtils.lerp(terrainHeight(TOWER_BASE.x,TOWER_BASE.z), TOWER_TOP.y, t);
+    player.position.set(TOWER_BASE.x, y, TOWER_BASE.z);
+    shakeAmt = Math.max(shakeAmt*0.9, 0.02);
+    if(t>=1){
+      towerLiftActive=false; atTowerTop=true; grounded=true; jumpY=0; jumpVel=0;
+      showToast('展望タワー頂上に到着。景色は最高だ', '#8fd0ff');
+    }
+    return;
+  }
+  if(paraglideActive){
+    paraglideT += dt/GLIDE_DURATION;
+    const t = Math.min(1, paraglideT);
+    const ease = t; // steady glide speed, not eased — feels more like sustained flight
+    const x = THREE.MathUtils.lerp(TOWER_TOP.x, GLIDE_LANDING.x, ease) + Math.sin(t*9)*1.4*(1-t*0.5);
+    const z = THREE.MathUtils.lerp(TOWER_TOP.z, GLIDE_LANDING.z, ease);
+    // a long, gentle arc: climbs a touch right after launch, then a steady descent to the landing site
+    const arc = Math.sin(t*Math.PI*0.5)*3 - t*t*(TOWER_TOP.y - terrainHeight(GLIDE_LANDING.x,GLIDE_LANDING.z));
+    const y = TOWER_TOP.y + arc;
+    player.position.set(x, Math.max(y, terrainHeight(x,z)+1.2), z);
+    paraglider.visible = true;
+    paraglider.position.set(x, player.position.y+1.6, z);
+    const lookDir = new THREE.Vector3(GLIDE_LANDING.x-TOWER_TOP.x,0,GLIDE_LANDING.z-TOWER_TOP.z);
+    player.rotation.y = Math.atan2(lookDir.x, lookDir.z) + Math.sin(t*9)*0.15;
+    paraglider.rotation.y = player.rotation.y;
+    shakeAmt = Math.max(shakeAmt*0.9, 0.04);
+    distTraveled = Math.hypot(x,z);
+    if(!paraglideRewardGiven && t>0.3){ paraglideRewardGiven=true; score+=90; showToast('絶景フライト！ +90','#ffb347'); AudioSys.chime(); }
+    if(t>=1 || player.position.y <= terrainHeight(x,z)+1.25){
+      paraglideActive=false; paraglider.visible=false; grounded=true; jumpY=0; jumpVel=0;
+      showToast('着地成功！', '#7bffa0');
+    }
+    return;
+  }
   if(keys['KeyW']||keys['ArrowUp']) mz-=1;
   if(keys['KeyS']||keys['ArrowDown']) mz+=1;
   if(keys['KeyA']||keys['ArrowLeft']) mx-=1;
@@ -3211,9 +3434,32 @@ function movePlayer(dt){
 
   const standingOnCrumble = grounded ? crumblePlatformAt(player.position.x, player.position.z) : null;
   updateCrumblePlatforms(dt, standingOnCrumble);
+  if(standingOnCrumble && standingOnCrumble.permanent && !standingOnCrumble.rewardGiven){
+    standingOnCrumble.rewardGiven = true;
+    score += standingOnCrumble.reward;
+    showToast(`隠しルート発見！ +${standingOnCrumble.reward}`, '#ffd23f');
+    AudioSys.chime();
+  }
 
   let gy = terrainHeight(player.position.x, player.position.z);
   if(standingOnCrumble && standingOnCrumble.state!=='gone') gy = standingOnCrumble.baseY;
+
+  const standingOnRoller = grounded ? rollerAt(player.position.x, player.position.z) : null;
+  if(standingOnRoller){
+    gy = standingOnRoller.topY;
+    // the spinning surface drags you sideways along its own local "across" axis — counter it
+    // with A/D (or you'll slide off) instead of it just being a static plank painted to spin
+    const {u,v} = zoneLocal(player.position.x, player.position.z, {cx:standingOnRoller.cx, cz:standingOnRoller.cz, angle:standingOnRoller.angle});
+    const drift = standingOnRoller.spin * 0.55 * dt;
+    const nv = v + drift;
+    player.position.x = standingOnRoller.cx + Math.cos(standingOnRoller.angle)*u - Math.sin(standingOnRoller.angle)*nv;
+    player.position.z = standingOnRoller.cz + Math.sin(standingOnRoller.angle)*u + Math.cos(standingOnRoller.angle)*nv;
+    if(Math.abs(nv) > standingOnRoller.rad*0.92){
+      grounded=false; jumpVel=Math.min(jumpVel,-1);
+      damagePlayer(8); shakeAmt=Math.max(shakeAmt,0.5); AudioSys.hit();
+      showToast('丸太から滑り落ちた！', '#ff8a4c');
+    }
+  }
   const targetY = gy + jumpY;
   if(grounded){
     // snap fast enough that stepping onto a stone/stair/bridge never looks like sinking into it,
@@ -3358,6 +3604,7 @@ function animate(now){
   updateInstitutePrompt();
   updateRopewayChairs(now);
   updateTrolleyPrompt();
+  updateTowerPrompts();
   updateOnsen(dt, now);
 
   // visibility from ash (depletes slowly, worse near volcano / during eruption)
@@ -3381,6 +3628,8 @@ function animate(now){
   updateAshPuffs(dt);
   updateGeysers(dt);
   updateUpdraftVents(dt, now);
+  updateLogRollers(dt);
+  updateShelter();
   updateNPCs(dt, now);
   updatePendulumLogs(dt);
   updatePumice(dt);
@@ -3468,8 +3717,9 @@ function resetGame(){
   bombs.forEach(b=>scene.remove(b.mesh)); bombs=[];
   pumice.forEach(p=>scene.remove(p.mesh)); pumice=[];
   scorchPool.forEach(s=>{ s.active=false; s.mesh.visible=false; });
-  CRUMBLE_PLATFORMS.forEach(p=>{ p.state='solid'; p.standTimer=0; p.shakeTimer=0; p.respawnTimer=0; p.mesh.visible=true; });
+  CRUMBLE_PLATFORMS.forEach(p=>{ p.state='solid'; p.standTimer=0; p.shakeTimer=0; p.respawnTimer=0; p.mesh.visible=true; p.rewardGiven=false; });
   UPDRAFT_VENTS.forEach(u=>{ u.rewardGiven=false; });
+  shelterMsgShown=false; playerSheltered=false;
   ashPuffPool.forEach(p=>{ p.active=false; p.sprite.visible=false; });
   GEYSERS.forEach(g=>{ g._hitThisBurst=false; });
   fissures.forEach(f=>{ if(f.ring) scene.remove(f.ring); if(f.flame) scene.remove(f.flame); }); fissures=[];
@@ -3490,6 +3740,8 @@ function resetGame(){
   ropewayActive=false; ropewayPhase='up'; ropewayT=0; ropewayPauseT=0; ropewayViewBonusGiven=false;
   trolleyActive=false; trolleyT=0; trolleyUsed=false;
   trolleyCart.position.set(TROLLEY_STATION.x, terrainHeight(TROLLEY_STATION.x,TROLLEY_STATION.z)+TROLLEY_START_Y_OFFSET, TROLLEY_STATION.z);
+  towerLiftActive=false; towerLiftT=0; atTowerTop=false; paraglideActive=false; paraglideT=0; paraglideRewardGiven=false;
+  paraglider.visible=false; towerBuild.cage.position.y=1.0;
   onsenEntered=false;
   ropeway.riderChair.visible=false;
   lastFootStep=0;
