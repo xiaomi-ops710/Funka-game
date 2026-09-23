@@ -1027,6 +1027,125 @@ function updateGeysers(dt){
   }
 }
 
+/* ---------- NEW GIMMICK: 崩れる足場 (crumbling stepping platforms) ----------
+   A run of floating stone platforms offering a fast shortcut — but stand on one too long and
+   it shakes, then drops out from under you, dumping you back down to the ground with a jolt
+   of damage. They reset after a few seconds so you can try again or time a run across. */
+const CRUMBLE_PLATFORMS = [
+  {x:-300, z:205, r:1.7, riseH:3.4},
+  {x:-296, z:222, r:1.7, riseH:3.6},
+  {x:-303, z:239, r:1.7, riseH:3.3},
+  {x:-297, z:256, r:1.7, riseH:3.7},
+  {x:-302, z:273, r:1.7, riseH:3.4},
+];
+const crumbleMat = new THREE.MeshStandardMaterial({color:0x7a6a52, roughness:0.9, flatShading:true});
+const crumbleCrackMat = new THREE.MeshStandardMaterial({color:0x3a2f22, roughness:1, flatShading:true, emissive:0x000000});
+CRUMBLE_PLATFORMS.forEach(p=>{
+  const groundY = terrainHeight(p.x,p.z);
+  p.baseY = groundY + p.riseH;
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(p.r, p.r*1.08, 0.5, 8), crumbleMat);
+  mesh.position.set(p.x, p.baseY, p.z);
+  mesh.castShadow=true; mesh.receiveShadow=true;
+  scene.add(mesh);
+  // a thin support column down to the ground, purely visual, so the platform doesn't look
+  // like it's just hanging in mid-air with nothing holding it up
+  const col = new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.24,p.riseH,6), crumbleCrackMat);
+  col.position.set(p.x, groundY+p.riseH/2, p.z);
+  scene.add(col);
+  p.mesh = mesh; p.state='solid'; p.standTimer=0; p.shakeTimer=0; p.respawnTimer=0; p.groundY=groundY;
+});
+function crumblePlatformAt(x,z){
+  for(const p of CRUMBLE_PLATFORMS){
+    if(p.state==='gone') continue;
+    if(Math.hypot(x-p.x, z-p.z) < p.r) return p;
+  }
+  return null;
+}
+function updateCrumblePlatforms(dt, standingOn){
+  for(const p of CRUMBLE_PLATFORMS){
+    if(p.state==='solid'){
+      p.mesh.position.x = p.x; p.mesh.position.z = p.z; p.mesh.position.y = p.baseY;
+      if(standingOn===p){
+        p.standTimer += dt;
+        if(p.standTimer > 0.6){ p.state='shake'; p.shakeTimer=0; AudioSys.crackle(); }
+      } else p.standTimer = Math.max(0, p.standTimer-dt*2);
+    } else if(p.state==='shake'){
+      p.shakeTimer += dt;
+      const s = Math.min(1, p.shakeTimer/0.5);
+      p.mesh.position.x = p.x + (Math.random()-0.5)*0.08*s;
+      p.mesh.position.z = p.z + (Math.random()-0.5)*0.08*s;
+      p.mesh.position.y = p.baseY - s*0.15;
+      if(p.shakeTimer>0.5){
+        p.state='gone'; p.respawnTimer=0; p.mesh.visible=false;
+        if(standingOn===p){
+          // the ground drops out from under the player right now — let gravity take it from here
+          grounded=false; jumpVel=Math.min(jumpVel,-1);
+          damagePlayer(14); shakeAmt=Math.max(shakeAmt,0.7); AudioSys.hit();
+          showToast('足場が崩れた！', '#ff8a4c');
+        }
+      }
+    } else { // gone
+      p.respawnTimer += dt;
+      if(p.respawnTimer>4.5){ p.state='solid'; p.mesh.visible=true; p.standTimer=0; }
+    }
+  }
+}
+
+/* ---------- NEW GIMMICK: 上昇気流 (thermal updraft vents) ----------
+   Step into the rising column of hot air and you float upward instead of falling — ride it up
+   to grab a one-time score bonus glinting near the top, then drift back down (or off the side)
+   once you leave the column. A fun risk-free way to break up the run-and-dodge rhythm. */
+const UPDRAFT_VENTS = [
+  {x:60,  z:230, r:5.2, lift:14, topOffset:24},
+  {x:-150,z:300, r:5.5, lift:15, topOffset:27},
+];
+UPDRAFT_VENTS.forEach(u=>{
+  u.baseY = terrainHeight(u.x,u.z);
+  u.rewardGiven = false;
+  u.sprites = [];
+  const count = isLowPower?5:8;
+  for(let i=0;i<count;i++){
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({map:geyserSteamTex, transparent:true, opacity:0.3, depthWrite:false}));
+    s.position.set(u.x, u.baseY+(i/count)*u.topOffset, u.z);
+    s.scale.set(u.r*0.85, u.r*1.5, 1);
+    scene.add(s);
+    u.sprites.push(s);
+  }
+  u.marker = new THREE.Mesh(new THREE.OctahedronGeometry(0.6,0),
+    new THREE.MeshStandardMaterial({color:0xffd23f, emissive:0xff9a1f, emissiveIntensity:1.4, roughness:0.4}));
+  u.marker.position.set(u.x, u.baseY+u.topOffset+1.4, u.z);
+  scene.add(u.marker);
+});
+function updateUpdraftVents(dt, now){
+  for(const u of UPDRAFT_VENTS){
+    for(let i=0;i<u.sprites.length;i++){
+      const s = u.sprites[i];
+      s.position.y += dt*(6+i*0.4);
+      if(s.position.y > u.baseY+u.topOffset) s.position.y = u.baseY;
+      const localT = (s.position.y-u.baseY)/u.topOffset;
+      s.material.opacity = 0.32*(1-Math.min(1,localT)*0.6);
+    }
+    u.marker.rotation.y += dt*1.2;
+    u.marker.position.y = u.baseY+u.topOffset+1.4+Math.sin(now*0.003)*0.3;
+
+    if(ziplineActive||swingActive||ropewayActive||trolleyActive) continue;
+    const dist = Math.hypot(player.position.x-u.x, player.position.z-u.z);
+    const heightAbove = jumpY;
+    if(dist < u.r && heightAbove < u.topOffset+2){
+      grounded = false;
+      jumpVel = Math.max(jumpVel, 0) + u.lift*dt*4;
+      jumpVel = Math.min(jumpVel, u.lift);
+      shakeAmt = Math.max(shakeAmt*0.9, 0.02);
+      if(!u.rewardGiven && heightAbove > u.topOffset-2.5){
+        u.rewardGiven = true;
+        score += 120;
+        showToast('上昇気流ボーナス！ +120', '#ffd23f');
+        AudioSys.chime();
+      }
+    }
+  }
+}
+
 // scattered rocks / dead trees for texture
 const rockGeo = new THREE.DodecahedronGeometry(1,0);
 const rockMat = new THREE.MeshStandardMaterial({color:0x554839, roughness:1, flatShading:true});
@@ -1386,15 +1505,23 @@ function buildInstitute(){
   return g;
 }
 const institute = buildInstitute();
-const institutePos = new THREE.Vector3(45, 0, 95); // front side, close to where the player starts
+const institutePos = new THREE.Vector3(64, 0, 136); // moved further out from the volcano's base than before
 institutePos.y = terrainHeight(institutePos.x, institutePos.z);
 institute.position.copy(institutePos);
 institute.lookAt(0, institutePos.y, 0);
 scene.add(institute);
 
 const instR = Math.hypot(institutePos.x, institutePos.z), instUX = institutePos.x/instR, instUZ = institutePos.z/instR;
-const ROPE_BOTTOM = { x:instUX*88, z:instUZ*88, y: terrainHeight(instUX*88,instUZ*88)+2.4 };
+// the boarding platform sits just outside the institute itself (not at a fixed distance from
+// the volcano), so moving the building doesn't leave a long unexplained teleport to the lift
+const ROPE_BOTTOM = { x: institutePos.x - instUX*14, z: institutePos.z - instUZ*14,
+  y: terrainHeight(institutePos.x - instUX*14, institutePos.z - instUZ*14) + 2.4 };
 const ROPE_TOP = { x:instUX*18, z:instUZ*18, y: volcano.position.y+98.75 }; // right at the existing crater-rim ring mesh
+// real chairlifts run as a loop: a continuous cable up one side and back down the other, over
+// bullwheels at each end. Two parallel, laterally-offset lines stand in for that loop, instead
+// of one line reused as an up-then-down trip.
+const ropeDX=ROPE_TOP.x-ROPE_BOTTOM.x, ropeDZ=ROPE_TOP.z-ROPE_BOTTOM.z, ropeLen=Math.hypot(ropeDX,ropeDZ);
+const ropePerpX = -ropeDZ/ropeLen, ropePerpZ = ropeDX/ropeLen, ROPE_GAUGE = 1.6;
 const ROPEWAY_UP_DURATION = 11, ROPEWAY_PAUSE_DURATION = 4, ROPEWAY_DOWN_DURATION = 11;
 function buildChairSeat(){
   const g = new THREE.Group();
@@ -1415,29 +1542,72 @@ function buildChairSeat(){
 function buildRopeway(){
   const towerMat = new THREE.MeshStandardMaterial({color:0x4a4640, roughness:0.6, metalness:0.4});
   const cableMat = new THREE.MeshStandardMaterial({color:0x1c1a18, roughness:0.5, metalness:0.6});
-  const dx=ROPE_TOP.x-ROPE_BOTTOM.x, dz=ROPE_TOP.z-ROPE_BOTTOM.z, dist=Math.hypot(dx,dz);
+  const wheelMat = new THREE.MeshStandardMaterial({color:0x2a2622, roughness:0.4, metalness:0.7});
+  const dx=ropeDX, dz=ropeDZ;
+  // two parallel lines: chairs ascend on one, descend on the other, like a real haul-rope loop
+  const upCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(ROPE_BOTTOM.x+ropePerpX*ROPE_GAUGE, ROPE_BOTTOM.y, ROPE_BOTTOM.z+ropePerpZ*ROPE_GAUGE),
+    new THREE.Vector3(ROPE_BOTTOM.x+dx*0.5+ropePerpX*ROPE_GAUGE, ROPE_BOTTOM.y+(ROPE_TOP.y-ROPE_BOTTOM.y)*0.5+0.4, ROPE_BOTTOM.z+dz*0.5+ropePerpZ*ROPE_GAUGE),
+    new THREE.Vector3(ROPE_TOP.x+ropePerpX*ROPE_GAUGE, ROPE_TOP.y, ROPE_TOP.z+ropePerpZ*ROPE_GAUGE),
+  ]);
+  const downCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(ROPE_BOTTOM.x-ropePerpX*ROPE_GAUGE, ROPE_BOTTOM.y, ROPE_BOTTOM.z-ropePerpZ*ROPE_GAUGE),
+    new THREE.Vector3(ROPE_BOTTOM.x+dx*0.5-ropePerpX*ROPE_GAUGE, ROPE_BOTTOM.y+(ROPE_TOP.y-ROPE_BOTTOM.y)*0.5+0.4, ROPE_BOTTOM.z+dz*0.5-ropePerpZ*ROPE_GAUGE),
+    new THREE.Vector3(ROPE_TOP.x-ropePerpX*ROPE_GAUGE, ROPE_TOP.y, ROPE_TOP.z-ropePerpZ*ROPE_GAUGE),
+  ]);
   const towerCount = 3;
+  const towerTs = [];
   for(let i=1;i<=towerCount;i++){
     const t = i/(towerCount+1);
+    towerTs.push(t);
     const tx = ROPE_BOTTOM.x+dx*t, tz = ROPE_BOTTOM.z+dz*t;
     const cableY = ROPE_BOTTOM.y+(ROPE_TOP.y-ROPE_BOTTOM.y)*t;
     const groundY = terrainHeight(tx,tz);
     const h = Math.max(2, cableY-groundY+0.6);
-    const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.26,h,7), towerMat);
+    const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.3,h,7), towerMat);
     tower.position.set(tx, groundY+h/2, tz);
     tower.castShadow=false; tower.receiveShadow=true;
     scene.add(tower);
-    const crossbar = new THREE.Mesh(new THREE.BoxGeometry(1.6,0.12,0.3), towerMat);
-    crossbar.position.set(tx, groundY+h+0.1, tz);
-    scene.add(crossbar);
+    // a crossarm carrying a small sheave (roller wheel) under each of the two cable lines,
+    // instead of the cable just resting on a plain beam
+    const crossarm = new THREE.Mesh(new THREE.BoxGeometry(ROPE_GAUGE*2+0.5,0.14,0.22), towerMat);
+    crossarm.position.set(tx, groundY+h+0.08, tz);
+    crossarm.rotation.y = Math.atan2(dx,dz);
+    scene.add(crossarm);
+    [1,-1].forEach(side=>{
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.16,0.09,10), wheelMat);
+      wheel.rotation.z = Math.PI/2; wheel.rotation.y = Math.atan2(dx,dz);
+      wheel.position.set(tx+ropePerpX*side*ROPE_GAUGE, groundY+h+0.02, tz+ropePerpZ*side*ROPE_GAUGE);
+      scene.add(wheel);
+    });
   }
-  const curve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(ROPE_BOTTOM.x,ROPE_BOTTOM.y,ROPE_BOTTOM.z),
-    new THREE.Vector3(ROPE_BOTTOM.x+dx*0.5, ROPE_BOTTOM.y+(ROPE_TOP.y-ROPE_BOTTOM.y)*0.5+0.4, ROPE_BOTTOM.z+dz*0.5),
-    new THREE.Vector3(ROPE_TOP.x,ROPE_TOP.y,ROPE_TOP.z),
-  ]);
-  const cable = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.05, 5, false), cableMat);
-  scene.add(cable);
+  function buildCableMesh(curve){
+    const cable = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.045, 5, false), cableMat);
+    scene.add(cable);
+    return cable;
+  }
+  buildCableMesh(upCurve);
+  buildCableMesh(downCurve);
+  // bullwheels — the big wheels the loop cable wraps around at each end of a real chairlift
+  function buildBullwheel(pos, dirAngle){
+    const g = new THREE.Group();
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(ROPE_GAUGE, 0.09, 8, 20), wheelMat);
+    rim.rotation.y = dirAngle;
+    g.add(rim);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,ROPE_GAUGE*2+0.2,8), towerMat);
+    hub.rotation.z = Math.PI/2; hub.rotation.y = dirAngle;
+    g.add(hub);
+    g.position.copy(pos);
+    scene.add(g);
+    return g;
+  }
+  buildBullwheel(new THREE.Vector3(ROPE_BOTTOM.x, ROPE_BOTTOM.y+0.9, ROPE_BOTTOM.z), Math.atan2(dx,dz)+Math.PI/2);
+  buildBullwheel(new THREE.Vector3(ROPE_TOP.x, ROPE_TOP.y+0.9, ROPE_TOP.z), Math.atan2(dx,dz)+Math.PI/2);
+  // small engine housing at the bottom station driving the loop — every real chairlift bullwheel
+  // is motor-driven, it isn't just cable resting over a bare wheel
+  const engineHouse = new THREE.Mesh(new THREE.BoxGeometry(1.6,1.1,1.3), towerMat);
+  engineHouse.position.set(ROPE_BOTTOM.x, ROPE_BOTTOM.y-0.2, ROPE_BOTTOM.z-1.6);
+  scene.add(engineHouse);
   // a viewing platform at the top, right on the crater rim
   const platMat = new THREE.MeshStandardMaterial({color:0x6b6156, roughness:0.9, flatShading:true});
   const platform = new THREE.Mesh(new THREE.CylinderGeometry(3.2,3.4,0.5,10), platMat);
@@ -1451,29 +1621,32 @@ function buildRopeway(){
     post.position.set(ROPE_TOP.x+Math.cos(a)*3.1, ROPE_TOP.y-0.1, ROPE_TOP.z+Math.sin(a)*3.1);
     scene.add(post);
   }
-  // a handful of decorative chairs cycling along the cable, always running for atmosphere
+  // decorative chairs continuously circulating — half climbing the up-line, half descending the
+  // down-line, looping — rather than one set ping-ponging back and forth on a single line
   const decoChairs = [];
-  const decoCount = isLowPower?3:5;
+  const decoCount = isLowPower?4:6;
   for(let i=0;i<decoCount;i++){
     const chair = buildChairSeat();
     scene.add(chair);
-    decoChairs.push({mesh:chair, offset:i/decoCount});
+    const goingUp = i%2===0;
+    decoChairs.push({mesh:chair, offset:(i/decoCount), curve: goingUp?upCurve:downCurve, up:goingUp});
   }
   const riderChair = buildChairSeat();
   riderChair.visible = false;
   scene.add(riderChair);
-  return {curve, decoChairs, riderChair};
+  return {upCurve, downCurve, towerTs, decoChairs, riderChair};
 }
 const ropeway = buildRopeway();
 function updateRopewayChairs(now){
-  const cycle = (ROPEWAY_UP_DURATION+ROPEWAY_DOWN_DURATION)*1.6;
+  const cycle = ROPEWAY_UP_DURATION+ROPEWAY_DOWN_DURATION+ROPEWAY_PAUSE_DURATION*0.3;
   for(const c of ropeway.decoChairs){
-    const t = ((now*0.001/cycle)+c.offset)%1;
-    const u = t<0.5 ? t*2 : 2-t*2; // up then back down, looping
-    const p = ropeway.curve.getPoint(u);
+    let t = ((now*0.001/cycle)+c.offset)%1;
+    if(!c.up) t = 1-t; // the down-line chair travels top-to-bottom as t increases
+    const p = c.curve.getPoint(t);
     c.mesh.position.set(p.x, p.y-0.9, p.z);
-    const look = ropeway.curve.getTangent(u);
-    c.mesh.rotation.y = Math.atan2(look.x, look.z) + (t<0.5?0:Math.PI);
+    const look = c.curve.getTangent(t);
+    const dir = c.up ? 1 : -1;
+    c.mesh.rotation.y = Math.atan2(look.x*dir, look.z*dir);
   }
 }
 
@@ -2062,7 +2235,7 @@ let health=100, visibility=100, distTraveled=0, elapsed=0, started=false, over=f
 let stamina=100, exhausted=false;
 let score=0, nearMissCount=0, eruptionsSurvived=0, quizCorrectCount=0;
 let eruptionActive=false, eruptionTimer=0, nextEruptionAt=22, warningTimer=0;
-let bombs=[], pumice=[], lavaBursts=[];
+let bombs=[], pumice=[];
 let shakeAmt=0;
 let jumpY=0, jumpVel=0, grounded=true;
 let fissures=[], nextFissureAt=8;
@@ -2169,16 +2342,17 @@ function spawnBomb(big){
   bombs.push({mesh, start:performance.now(), flightTime, from:new THREE.Vector3(0,55,0),
     to:new THREE.Vector3(tx, terrainHeight(tx,tz), tz), landed:false, radius: 2.4*s, dmg: big?34:16, big, nearMissChecked:false});
 }
+const _bombScratchPos = new THREE.Vector3(); // reused every frame instead of allocating per bomb
 function updateBombs(dt, now){
   for(let i=bombs.length-1;i>=0;i--){
     const b=bombs[i]; const t=Math.min(1,(now-b.start)/1000/b.flightTime);
-    const pos = new THREE.Vector3().lerpVectors(b.from,b.to,t);
-    pos.y += Math.sin(Math.PI*t) * 22 * (b.big?1.3:1);
-    b.mesh.position.copy(pos);
+    _bombScratchPos.lerpVectors(b.from,b.to,t);
+    _bombScratchPos.y += Math.sin(Math.PI*t) * 22 * (b.big?1.3:1);
+    b.mesh.position.copy(_bombScratchPos);
     b.mesh.rotation.x += dt*4; b.mesh.rotation.y += dt*3;
     if(t>=1 && !b.landed){
       b.landed=true;
-      lavaBursts.push({pos:b.to.clone(), age:0, life:2.2+Math.random()*1.2, r: b.big?4.5:2.2});
+      spawnLavaBurst(b.to, 2.2+Math.random()*1.2, b.big ? 4.5 : 2.2);
       const distToPlayer = b.to.distanceTo(player.position);
       if(distToPlayer < b.radius + 1.3){
         damagePlayer(b.dmg);
@@ -2188,56 +2362,87 @@ function updateBombs(dt, now){
       }
       if(distToPlayer < 40) AudioSys.crackle();
       scene.remove(b.mesh);
-      setTimeout(()=>{}, 0);
       bombs.splice(i,1);
     }
   }
 }
 
-/* ---------- Mushroom ash column — a few big smoke sprites that billow up on a major eruption ---------- */
-let ashPuffs=[];
+/* ---------- Mushroom ash column — a few big smoke sprites that billow up on a major eruption ----------
+   Pooled for the same reason as the scorch marks above: this used to create brand-new sprites
+   and materials every eruption and never release them. */
+const ASH_PUFF_POOL_SIZE = 10;
+const ashPuffPool = [];
+for(let i=0;i<ASH_PUFF_POOL_SIZE;i++){
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:smokeTex, color:0x241d18, transparent:true, opacity:0, depthWrite:false}));
+  sprite.visible = false;
+  scene.add(sprite);
+  ashPuffPool.push({sprite, active:false, age:0, life:1, riseSpeed:0, growTo:78});
+}
 function spawnMushroomCloud(){
   crater.getWorldPosition(craterWorld);
   const puffCount = isLowPower?4:7;
-  for(let i=0;i<puffCount;i++){
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:smokeTex, color:0x241d18, transparent:true, opacity:0.86, depthWrite:false}));
+  const free = ashPuffPool.filter(p=>!p.active);
+  for(let i=0;i<puffCount && i<free.length;i++){
+    const p = free[i];
     const ang=Math.random()*Math.PI*2, r=Math.random()*8;
-    sprite.position.set(craterWorld.x+Math.cos(ang)*r, craterWorld.y+6+Math.random()*10, craterWorld.z+Math.sin(ang)*r);
-    sprite.scale.set(16,16,1);
-    scene.add(sprite);
-    ashPuffs.push({sprite, age:0, life:6+Math.random()*2.5, riseSpeed:4.5+Math.random()*3.5, growTo:78+Math.random()*36});
+    p.sprite.position.set(craterWorld.x+Math.cos(ang)*r, craterWorld.y+6+Math.random()*10, craterWorld.z+Math.sin(ang)*r);
+    p.sprite.scale.set(14,14,1);
+    p.sprite.visible = true;
+    p.active = true; p.age = 0; p.life = 6+Math.random()*2.5;
+    p.riseSpeed = 4.5+Math.random()*3.5; p.growTo = 78+Math.random()*36;
   }
 }
 function updateAshPuffs(dt){
-  for(let i=ashPuffs.length-1;i>=0;i--){
-    const p=ashPuffs[i]; p.age+=dt;
-    const t=p.age/p.life;
+  for(const p of ashPuffPool){
+    if(!p.active) continue;
+    p.age += dt;
+    const t = p.age/p.life;
     p.sprite.position.y += p.riseSpeed*dt*(1-t*0.5);
     const s = 14 + (p.growTo-14)*Math.min(1,t*1.6);
     p.sprite.scale.set(s,s,1);
     p.sprite.material.opacity = 0.78*(1-t);
-    if(t>=1){ scene.remove(p.sprite); ashPuffs.splice(i,1); }
+    if(t>=1){ p.active=false; p.sprite.visible=false; }
   }
 }
 
-/* ---------- Lava scorch marks (ground burns where bombs land) ---------- */
+/* ---------- Lava scorch marks (ground burns where bombs land) ----------
+   Pooled: every eruption used to instantiate a brand-new Mesh + brand-new Material for each
+   of up to ~78 landing bombs, back-to-back, with nothing ever disposed. That burst of fresh
+   GPU objects (plus the ones from the eruption before it, and the one before that) is exactly
+   why things got heavy during and right after an eruption. Now a fixed pool of meshes is built
+   once at load and reused forever — spawning a burst just grabs a free slot instead of
+   allocating. */
 const scorchGeo = new THREE.CircleGeometry(1,16);
-const scorchPool=[];
+const SCORCH_POOL_SIZE = 48;
+const scorchPool = [];
+for(let i=0;i<SCORCH_POOL_SIZE;i++){
+  const m = new THREE.Mesh(scorchGeo, new THREE.MeshBasicMaterial({color:0xff5a1f, transparent:true, opacity:0}));
+  m.rotation.x=-Math.PI/2; m.visible=false; m.scale.setScalar(0.001);
+  scene.add(m);
+  scorchPool.push({mesh:m, active:false, age:0, life:1, r:1});
+}
+function spawnLavaBurst(pos, life, r){
+  // reuse the oldest inactive slot; if the pool is somehow saturated, steal the
+  // longest-running one rather than growing the pool
+  let slot = scorchPool.find(s=>!s.active);
+  if(!slot) slot = scorchPool.reduce((a,b)=> a.age/a.life > b.age/b.life ? a : b);
+  slot.active = true; slot.age = 0; slot.life = life; slot.r = r;
+  slot.mesh.position.copy(pos); slot.mesh.position.y += 0.05;
+  slot.mesh.visible = true; slot.mesh.scale.setScalar(0.1);
+  slot.mesh.material.opacity = 0.9;
+}
 function updateLavaBursts(dt){
-  for(let i=lavaBursts.length-1;i>=0;i--){
-    const l=lavaBursts[i]; l.age+=dt;
-    if(!l.mesh){
-      const m = new THREE.Mesh(scorchGeo, new THREE.MeshBasicMaterial({color:0xff5a1f, transparent:true, opacity:0.9}));
-      m.rotation.x=-Math.PI/2; m.position.copy(l.pos); m.position.y+=0.05; m.scale.setScalar(0.1);
-      scene.add(m); l.mesh=m;
-    }
+  for(const l of scorchPool){
+    if(!l.active) continue;
+    l.age += dt;
     const growT = Math.min(1, l.age/0.4);
     l.mesh.scale.setScalar(0.1 + growT*l.r);
     const fadeT = Math.max(0,(l.life-l.age)/l.life);
     l.mesh.material.opacity = 0.85*fadeT;
-    if(l.age>=l.life){ scene.remove(l.mesh); lavaBursts.splice(i,1); }
+    if(l.age>=l.life){ l.active=false; l.mesh.visible=false; }
   }
 }
+
 
 /* ---------- Pumice / ash-cloud dodgeable chunks along ground path (rolling) ---------- */
 const pumiceGeo = new THREE.DodecahedronGeometry(0.5,0);
@@ -2721,7 +2926,9 @@ function triggerEruption(){
   spawnLightning();
   spawnMushroomCloud();
   flashScreen(0.4);
-  const burstCount = Math.round(26 * volcanoPower);
+  // capped so a maxed-out volcanoPower (up to x3) can't push this into the 70+ bombs it used to
+  // reach — that many landings in a few seconds was the other big source of the eruption lag
+  const burstCount = Math.min(40, Math.round(20 * volcanoPower));
   for(let i=0;i<burstCount;i++) setTimeout(()=>spawnBomb(true), i*90);
 }
 function endEruption(){
@@ -2826,15 +3033,18 @@ function movePlayer(dt){
     if(ropewayPhase==='up'){
       ropewayT += dt/ROPEWAY_UP_DURATION;
       const t = Math.min(1, ropewayT);
-      const p = ropeway.curve.getPoint(t);
+      const p = ropeway.upCurve.getPoint(t);
       const sway = Math.sin(t*22)*0.12*(1-Math.abs(t-0.5)*1.6);
       player.position.set(p.x+sway, p.y, p.z);
-      const look = ropeway.curve.getTangent(t);
+      const look = ropeway.upCurve.getTangent(t);
       player.rotation.y = Math.atan2(look.x, look.z);
       player.rotation.z = sway*0.4;
       ropeway.riderChair.position.set(p.x+sway, p.y-0.9, p.z);
       ropeway.riderChair.rotation.y = player.rotation.y;
       shakeAmt = Math.max(shakeAmt*0.9, 0.03);
+      // a little jolt each time the chair passes over a tower's sheave wheel — real chairs
+      // visibly bump as the cable rolls over each support
+      for(const tt of ropeway.towerTs){ if(Math.abs(t-tt) < dt/ROPEWAY_UP_DURATION*1.5){ shakeAmt = Math.max(shakeAmt, 0.16); } }
       if(t>=1){
         ropewayPhase='pause'; ropewayPauseT=0; player.rotation.z=0;
         if(!ropewayViewBonusGiven){ ropewayViewBonusGiven=true; score+=150; }
@@ -2847,15 +3057,16 @@ function movePlayer(dt){
     } else {
       ropewayT += dt/ROPEWAY_DOWN_DURATION;
       const t = Math.min(1, ropewayT);
-      const p = ropeway.curve.getPoint(1-t);
+      const p = ropeway.downCurve.getPoint(1-t);
       const sway = Math.sin(t*22)*0.12*(1-Math.abs(t-0.5)*1.6);
       player.position.set(p.x+sway, p.y, p.z);
-      const look = ropeway.curve.getTangent(1-t);
+      const look = ropeway.downCurve.getTangent(1-t);
       player.rotation.y = Math.atan2(-look.x, -look.z);
       player.rotation.z = sway*0.4;
       ropeway.riderChair.position.set(p.x+sway, p.y-0.9, p.z);
       ropeway.riderChair.rotation.y = player.rotation.y;
       shakeAmt = Math.max(shakeAmt*0.9, 0.03);
+      for(const tt of ropeway.towerTs){ if(Math.abs((1-t)-tt) < dt/ROPEWAY_DOWN_DURATION*1.5){ shakeAmt = Math.max(shakeAmt, 0.16); } }
       if(t>=1){
         ropewayActive=false; ropeway.riderChair.visible=false; grounded=true; jumpY=0; jumpVel=0; player.rotation.z=0;
         showToast('研究所に到着', '#7bffa0');
@@ -2963,10 +3174,16 @@ function movePlayer(dt){
   }
 
   // clamp to ground bounds & keep off crater
+  // NOTE: the volcano's visible cone (coneGeo) has a 60-unit base radius, but the walkable
+  // ground underneath only rises gently near the center — so a player could previously walk
+  // to within 26 units of center and end up standing on flat ground *underneath* the visible
+  // mountain slope (looks like clipping inside solid rock). Push the wall out past the cone's
+  // actual base so the player is always kept outside its visible footprint.
   const maxR = GROUND_SIZE*0.46;
+  const CRATER_WALL_R = 62;
   const distFromCenter = Math.hypot(player.position.x, player.position.z);
   if(distFromCenter>maxR){ const k=maxR/distFromCenter; player.position.x*=k; player.position.z*=k; }
-  if(distFromCenter<26){ const k=26/Math.max(distFromCenter,0.01); player.position.x*=k; player.position.z*=k; }
+  if(distFromCenter<CRATER_WALL_R){ const k=CRATER_WALL_R/Math.max(distFromCenter,0.01); player.position.x*=k; player.position.z*=k; }
 
   // jump (Space) - simple gravity arc, used to clear fissures/lava cracks
   const jumpPressed = !!keys['Space'];
@@ -2992,7 +3209,11 @@ function movePlayer(dt){
     }
   }
 
-  const gy = terrainHeight(player.position.x, player.position.z);
+  const standingOnCrumble = grounded ? crumblePlatformAt(player.position.x, player.position.z) : null;
+  updateCrumblePlatforms(dt, standingOnCrumble);
+
+  let gy = terrainHeight(player.position.x, player.position.z);
+  if(standingOnCrumble && standingOnCrumble.state!=='gone') gy = standingOnCrumble.baseY;
   const targetY = gy + jumpY;
   if(grounded){
     // snap fast enough that stepping onto a stone/stair/bridge never looks like sinking into it,
@@ -3159,6 +3380,7 @@ function animate(now){
   updateLavaBursts(dt);
   updateAshPuffs(dt);
   updateGeysers(dt);
+  updateUpdraftVents(dt, now);
   updateNPCs(dt, now);
   updatePendulumLogs(dt);
   updatePumice(dt);
@@ -3245,8 +3467,10 @@ function resetGame(){
   eruptionActive=false; nextEruptionAt=22; warningTimer=0; shakeAmt=0;
   bombs.forEach(b=>scene.remove(b.mesh)); bombs=[];
   pumice.forEach(p=>scene.remove(p.mesh)); pumice=[];
-  lavaBursts.forEach(l=>{ if(l.mesh) scene.remove(l.mesh); }); lavaBursts=[];
-  ashPuffs.forEach(p=>scene.remove(p.sprite)); ashPuffs=[];
+  scorchPool.forEach(s=>{ s.active=false; s.mesh.visible=false; });
+  CRUMBLE_PLATFORMS.forEach(p=>{ p.state='solid'; p.standTimer=0; p.shakeTimer=0; p.respawnTimer=0; p.mesh.visible=true; });
+  UPDRAFT_VENTS.forEach(u=>{ u.rewardGiven=false; });
+  ashPuffPool.forEach(p=>{ p.active=false; p.sprite.visible=false; });
   GEYSERS.forEach(g=>{ g._hitThisBurst=false; });
   fissures.forEach(f=>{ if(f.ring) scene.remove(f.ring); if(f.flame) scene.remove(f.flame); }); fissures=[];
   orbs.forEach(o=>scene.remove(o.mesh)); orbs=[];
