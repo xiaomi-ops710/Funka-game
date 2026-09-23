@@ -264,7 +264,7 @@ const camera = new THREE.PerspectiveCamera(62, innerWidth/innerHeight, 0.1, 2000
 
 /* ---------- Post-processing: bloom, for a proper glowing lava/crater/embers look.
    Falls back cleanly to plain rendering if the postprocessing scripts didn't load. */
-let composer = null, bloomPass = null;
+let composer = null, bloomPass = null, heatHazePass = null;
 const bloomSupported = !isLowPower && typeof THREE.EffectComposer==='function' && typeof THREE.UnrealBloomPass==='function';
 if(bloomSupported){
   try{
@@ -272,11 +272,55 @@ if(bloomSupported){
     composer.addPass(new THREE.RenderPass(scene, camera));
     bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.7, 0.82);
     composer.addPass(bloomPass);
+    // Heat-haze distortion — a cheap screen-space ripple over the rendered frame, driven by
+    // how close the player is to the crater and how active the eruption is right now. Real
+    // volcanic vents shimmer the air around them; without this the crater/lava just looks like
+    // a static glowing texture rather than something radiating heat.
+    if(typeof THREE.ShaderPass === 'function'){
+      heatHazePass = new THREE.ShaderPass({
+        uniforms: {
+          tDiffuse: { value: null },
+          uTime: { value: 0 },
+          uStrength: { value: 0 } // 0 = off, ramped up by proximity/eruption each frame
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+        `,
+        fragmentShader: `
+          uniform sampler2D tDiffuse;
+          uniform float uTime;
+          uniform float uStrength;
+          varying vec2 vUv;
+          void main(){
+            vec2 uv = vUv;
+            if(uStrength > 0.0001){
+              float wobble = sin(uv.y*38.0 + uTime*2.6) * 0.0022
+                           + sin(uv.y*13.0 - uTime*1.3) * 0.0016;
+              uv.x += wobble * uStrength;
+            }
+            gl_FragColor = texture2D(tDiffuse, uv);
+          }
+        `
+      });
+      heatHazePass.renderToScreen = true;
+      bloomPass.renderToScreen = false;
+      composer.addPass(heatHazePass);
+    }
     composer.setSize(innerWidth, innerHeight);
-  } catch(e){ composer=null; bloomPass=null; }
+  } catch(e){ composer=null; bloomPass=null; heatHazePass=null; }
 }
 function renderFrame(){
-  if(composer) composer.render();
+  if(composer){
+    if(heatHazePass){
+      // stronger the closer you are to the crater, and stronger still mid-eruption
+      const distFromCrater = Math.hypot(player.position.x, player.position.z);
+      const proximity = Math.max(0, 1 - distFromCrater/130);
+      heatHazePass.uniforms.uStrength.value = proximity * (0.4 + eruptGlow*0.6);
+      heatHazePass.uniforms.uTime.value = performance.now()*0.001;
+    }
+    composer.render();
+  }
   else renderer.render(scene, camera);
 }
 
@@ -360,7 +404,7 @@ let skyMat = null;
 })();
 
 /* ---------- Ground (procedural, sloping away from volcano) ---------- */
-const GROUND_SIZE = 1100, GROUND_SEG = isLowPower?90:150;
+const GROUND_SIZE = 1100, GROUND_SEG = isLowPower?120:200;
 const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, GROUND_SEG, GROUND_SEG);
 groundGeo.rotateX(-Math.PI/2);
 /* ---------- Athletic obstacle zones (ravine crossings with a plank bridge, boulder stairways) ----------
@@ -536,7 +580,7 @@ function buildTerrainPatch(ob, marginU, marginV, resU, resV){
       const u = -halfU + (i/resU)*halfU*2;
       const x = ob.cx + u*ca - v*sa;
       const z = ob.cz + u*sa + v*ca;
-      const y = terrainHeight(x,z) + 0.025;
+      const y = terrainHeight(x,z) + 0.05;
       positions.push(x,y,z);
       const d = Math.hypot(x,z);
       const t = Math.min(1, d/260);
@@ -557,9 +601,14 @@ function buildTerrainPatch(ob, marginU, marginV, resU, resV){
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
   geo.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:1, flatShading:false});
+  // polygonOffset pushes this patch's depth slightly toward the camera relative to the coarse
+  // base ground it sits on top of, so the two surfaces never flicker/z-fight where they overlap
+  // at a distance (depth-buffer precision gets tight far from camera with a 2000-unit far plane).
+  const mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:1, flatShading:false,
+    polygonOffset:true, polygonOffsetFactor:-4, polygonOffsetUnits:-4});
   const patch = new THREE.Mesh(geo, mat);
   patch.receiveShadow = true;
+  patch.renderOrder = 1;
   scene.add(patch);
 }
 OBSTACLE_ZONES.forEach(ob=>{
@@ -3015,10 +3064,41 @@ function updateCamera(dt){
   camera.lookAt(lookTarget);
 }
 
+/* ---------- Adaptive quality watchdog ----------
+   The isLowPower flag above only catches known-weak devices at startup (by UA/core-count).
+   It misses cases like a mid-range desktop with a weak GPU, a Chromebook, thermal throttling
+   mid-session, or background tabs stealing GPU time — all of which show up as sustained low
+   FPS rather than a device we could have detected up front. This watches real frame times
+   during play and, if things stay choppy for a couple of seconds, quietly drops the most
+   expensive settings (bloom, pixel ratio, shadow resolution) once — no UI, no interruption. */
+let qualityDowngraded = isLowPower; // low-power devices already start at the reduced tier
+let goodFrameStreak = 0, badFrameStreak = 0;
+function maybeDowngradeQuality(dt){
+  if(qualityDowngraded) return;
+  if(dt > 1/33){ // frame took longer than ~33ms -> under 30fps
+    badFrameStreak++; goodFrameStreak = 0;
+  } else {
+    goodFrameStreak++; badFrameStreak = Math.max(0, badFrameStreak-1);
+  }
+  if(badFrameStreak < 90) return; // ~a couple of seconds of sustained slowness, not just one hitch
+  qualityDowngraded = true;
+  if(composer){
+    if(bloomPass){ const idx=composer.passes.indexOf(bloomPass); if(idx>=0) composer.passes.splice(idx,1); bloomPass=null; }
+    if(heatHazePass){ const idx=composer.passes.indexOf(heatHazePass); if(idx>=0) composer.passes.splice(idx,1); heatHazePass=null; }
+    if(composer.passes.length){ composer.passes[composer.passes.length-1].renderToScreen = true; }
+  }
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  sun.shadow.mapSize.set(768,768);
+  if(sun.shadow.map){ sun.shadow.map.dispose(); sun.shadow.map = null; }
+  showToast('描画品質を自動調整しました', '#dfe8ea');
+}
+
 function animate(now){
   requestAnimationFrame(animate);
   const dt = Math.min(0.05,(now-lastTime)/1000);
   lastTime = now;
+  if(started && !over) maybeDowngradeQuality(dt);
   if(!started || over){ renderFrame(); return; }
 
   if(!quizOpen){
@@ -3135,12 +3215,17 @@ function animate(now){
   scene.background.copy(mixedFog);
   if(skyMat) skyMat.color.setRGB(1+eruptGlow*0.5, 1-eruptGlow*0.25, 1-eruptGlow*0.55);
 
-  // flowing lava rivers
-  const flowSpeed = (eruptionActive ? 1.4 : 0.45) * volcanoPower;
-  for(const mat of lavaFlows){
+  // flowing lava rivers — each flow gets its own slow, independent speed wobble (instead of
+  // a single uniform speed for all of them) so the rivers don't look like one looping texture
+  // pasted five times; real lava surges and stalls unevenly as it cools and pushes forward.
+  const baseFlowSpeed = (eruptionActive ? 1.4 : 0.45) * volcanoPower;
+  for(let i=0;i<lavaFlows.length;i++){
+    const mat = lavaFlows[i];
+    const wobble = 0.75 + 0.5*Math.sin(now*0.00035 + i*2.1) + 0.15*Math.sin(now*0.0013 + i*5.3);
+    const flowSpeed = baseFlowSpeed * Math.max(0.2, wobble);
     mat.map.offset.y -= dt*flowSpeed;
     mat.emissiveMap.offset.y = mat.map.offset.y;
-    mat.emissiveIntensity = 2.0 + Math.sin(now*0.004+mat.emissiveIntensity)*0.4 + (eruptionActive?1.2:0);
+    mat.emissiveIntensity = 2.0 + Math.sin(now*0.004+i*1.7)*0.4 + wobble*0.3 + (eruptionActive?1.2:0);
   }
   updateFountain(dt, now);
   updateFlameJet(now);
