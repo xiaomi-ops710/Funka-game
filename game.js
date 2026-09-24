@@ -1172,11 +1172,9 @@ LOG_ROLLERS.forEach(r=>{
   const ringMat = new THREE.MeshStandardMaterial({color:0x4a3320, roughness:0.9});
   for(let i=-3;i<=3;i++){
     const ring = new THREE.Mesh(new THREE.TorusGeometry(r.rad*1.01, 0.03, 6, 16), ringMat);
-    ring.position.copy(mesh.position);
-    ring.position.x += Math.sin(r.angle)*i*(r.len/8);
-    ring.position.z += Math.cos(r.angle)*i*(r.len/8);
+    ring.position.set(Math.sin(r.angle)*i*(r.len/8), 0, Math.cos(r.angle)*i*(r.len/8));
     ring.rotation.y = r.angle; ring.rotation.x = Math.PI/2;
-    mesh.add(ring); // rotates with the log below
+    mesh.add(ring); // local offset from the log's own center, rotates with the log below
   }
   scene.add(mesh);
   r.mesh = mesh;
@@ -1845,7 +1843,7 @@ function buildLookoutTower(){
     for(let side=0;side<4;side++){
       const [ax,az] = legOffsets[side];
       const [bx,bz] = legOffsets[(side+1)%4];
-      if(Math.hypot(ax-bx, az-bz) > 3) continue; // skip the diagonal pair, keep the 4 sides only
+      if(Math.hypot(ax-bx, az-bz) > 4) continue; // skip the diagonal pair, keep the 4 sides only
       const midx=(ax+bx)/2, midz=(az+bz)/2, len=Math.hypot(ax-bx,az-bz);
       const brace = new THREE.Mesh(new THREE.BoxGeometry(len,0.08,0.08), beamMat);
       brace.position.set(midx,y,midz);
